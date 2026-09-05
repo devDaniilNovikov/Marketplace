@@ -1,5 +1,11 @@
 databaseChangeLog:
+  # --- Ядро ---
+  - include:
+      file: db/changelog/core/00-schema.sql
+  - include:
+      file: db/changelog/core/00-functions.sql
   - include:
       file: db/changelog/core/00-outbox.sql
+  # --- Домены ---
   - include:
       file: db/changelog/domain/01-account.sql
