@@ -7,7 +7,8 @@ spring:
     virtual:
       enabled: true
 
-  # Настройки базы данных (переменные окружения с дефолтными значениями)
+  # Настройки базы данных
+  # Креды совпадают с docker-compose.yml (решение №7: секреты пока не выносим в env)
   datasource:
     url: jdbc:postgresql://localhost:5432/postgres
     username: daniilnovikov
@@ -27,21 +28,30 @@ spring:
     properties:
       hibernate:
         format_sql: true
+        # Обязательно под правило "только Instant": JDBC пишет и читает в UTC,
+        # иначе таймзона JVM протечёт в TIMESTAMPTZ
+        jdbc:
+          time_zone: UTC
+        # Схема монолита (решение №8) — @Table(schema=...) в сущностях можно не дублировать
+        default_schema: market_place
     # Включай show-sql: true локально только для дебага
     show-sql: false
 
   # Миграции
   liquibase:
-    enabled: false
+    enabled: true
     change-log: classpath:db/changelog/db.changelog-master.yaml
+    # Схему market_place создаёт сам changelog (00-schema.sql), поэтому
+    # служебные таблицы Liquibase держим в public — иначе курица и яйцо
+    liquibase-schema: public
 
-  # Redis (Кэш и Pub/Sub для чата)
+  # Redis (кэш каталога + Pub/Sub для событий Keycloak и чата)
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
 
-  # Безопасность (Keycloak)
+  # Безопасность (Keycloak — SSOT для аутентификации и ролей)
   security:
     oauth2:
       resourceserver:
@@ -62,3 +72,16 @@ management:
     web:
       exposure:
         include: health, metrics, prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    liquibase: INFO
+
+# Настройки монолита
+marketplace:
+  keycloak:
+    # Канал Redis Pub/Sub, куда Keycloak SPI публикует USER_UPDATED (сценарий 2)
+    events-channel: ${KEYCLOAK_EVENTS_CHANNEL:keycloak.events.user}
