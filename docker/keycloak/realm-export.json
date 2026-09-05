@@ -1,0 +1,65 @@
+{
+  "realm": "market-realm",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "accessTokenLifespan": 1800,
+  "roles": {
+    "realm": [
+      { "name": "BUYER",  "description": "Покупатель: оформление заказов" },
+      { "name": "SELLER", "description": "Продавец: управление каталогом и складом" },
+      { "name": "ADMIN",  "description": "Администратор: модерация и служебные эндпоинты" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "marketplace-api",
+      "name": "Marketplace API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:3000"],
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:3000/*"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "buyer",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "buyer@marketplace.local",
+      "firstName": "Ivan",
+      "lastName": "Buyer",
+      "credentials": [{ "type": "password", "value": "buyer", "temporary": false }],
+      "realmRoles": ["BUYER"]
+    },
+    {
+      "username": "seller",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "seller@marketplace.local",
+      "firstName": "Olga",
+      "lastName": "Seller",
+      "credentials": [{ "type": "password", "value": "seller", "temporary": false }],
+      "realmRoles": ["SELLER"]
+    },
+    {
+      "username": "admin-user",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "admin@marketplace.local",
+      "firstName": "Root",
+      "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "admin", "temporary": false }],
+      "realmRoles": ["ADMIN", "BUYER"]
+    }
+  ]
+}

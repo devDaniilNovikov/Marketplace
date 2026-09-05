@@ -1,0 +1,115 @@
+# Локальная инфраструктура монолита (решение №3: полный стек сразу).
+# Креды Postgres совпадают с src/main/resources/application.yml (решение №7),
+# поэтому после `docker compose up -d` приложение стартует без правки конфигов.
+name: marketplace
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: mp-postgres
+    environment:
+      POSTGRES_USER: daniilnovikov
+      POSTGRES_PASSWORD: demo2228
+      POSTGRES_DB: postgres
+      # Монолит хранит всё в UTC, база не должна вносить свою таймзону
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U daniilnovikov -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: mp-redis
+    # appendonly для Pub/Sub не нужен, но кэш каталога переживёт рестарт
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: mp-keycloak
+    # dev-режим: встроенная H2, без TLS. Для прода нужен start + внешняя БД.
+    command: ["start-dev", "--import-realm", "--health-enabled=true"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: 8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./docker/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      # Сюда ляжет SPI EventListener, публикующий USER_UPDATED в Redis (задача B8.2)
+      - ./docker/keycloak/providers:/opt/keycloak/providers
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '\"status\": \"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: mp-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # веб-консоль
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mp-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      # монолит запускается на хосте через ./gradlew bootRun, а не в compose
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mp-grafana
+    # 3000 на хосте занят монолитом
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  prometheus-data:
+  grafana-data:
