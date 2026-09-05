@@ -1,0 +1,64 @@
+server:
+  port: 3000
+
+spring:
+  # Включаем виртуальные потоки (Project Loom)
+  threads:
+    virtual:
+      enabled: true
+
+  # Настройки базы данных (переменные окружения с дефолтными значениями)
+  datasource:
+    url: jdbc:postgresql://localhost:5432/postgres
+    username: daniilnovikov
+    password: demo2228
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # Критически важно для виртуальных потоков (см. комментарий наставника)
+      maximum-pool-size: 50
+      minimum-idle: 10
+      connection-timeout: 3000
+
+  # Настройки Hibernate
+  jpa:
+    hibernate:
+      # Строго validate! Мы управляем схемой через Liquibase
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+    # Включай show-sql: true локально только для дебага
+    show-sql: false
+
+  # Миграции
+  liquibase:
+    enabled: false
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+
+  # Redis (Кэш и Pub/Sub для чата)
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  # Безопасность (Keycloak)
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_URL:http://localhost:8080/realms/market-realm}
+
+# Resilience4j (Базовый Rate Limiter для защиты от DDoS)
+resilience4j:
+  ratelimiter:
+    instances:
+      default:
+        limitForPeriod: 100
+        limitRefreshPeriod: 1s
+
+# Observability (Открываем эндпоинты для Prometheus)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, metrics, prometheus

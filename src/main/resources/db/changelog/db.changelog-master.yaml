@@ -1,0 +1,5 @@
+databaseChangeLog:
+  - include:
+      file: db/changelog/core/00-outbox.sql
+  - include:
+      file: db/changelog/domain/01-account.sql
