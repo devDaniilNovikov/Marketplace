@@ -7,6 +7,7 @@ import dn.marketplace.account.api.dto.AccountResponse;
 import dn.marketplace.account.api.enums.AccountStatus;
 import dn.marketplace.account.api.exception.AccountNotFoundException;
 import dn.marketplace.account.api.repository.AccountRepository;
+import dn.marketplace.account.api.mapper.AccountMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -23,7 +24,6 @@ import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
-@Transactional(readOnly = true)
 public class AccountServiceImpl implements AccountService {
 
     private final AccountRepository accountRepository;

@@ -1,4 +1,4 @@
-package dn.marketplace.account.service;
+package dn.marketplace.account.api.mapper;
 
 import dn.marketplace.account.api.AccountEntity;
 import dn.marketplace.account.api.dto.AccountResponse;
@@ -8,11 +8,12 @@ import org.mapstruct.ReportingPolicy;
 import java.util.List;
 
 /**
- * Внутренний адаптер Entity -> DTO. Package-private и лежит рядом с сервисом,
- * а не в {@code api}: сущность не должна быть частью публичной поверхности домена.
+ * Адаптер Entity -> DTO. Лежит в {@code api.mapper} и потому {@code public}:
+ * из {@code service} package-private интерфейс был бы не виден. Снаружи домена
+ * маппер не вызывают — межмодульные зависимости ограничивает ArchUnit.
  */
 @Mapper(componentModel = "spring",unmappedTargetPolicy = ReportingPolicy.ERROR)
-interface AccountMapper {
+public interface AccountMapper {
 
     AccountResponse toResponse(AccountEntity entity);
 
