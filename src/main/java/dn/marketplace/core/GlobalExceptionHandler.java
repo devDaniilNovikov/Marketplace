@@ -4,13 +4,16 @@ import dn.marketplace.core.exception.BusinessRuleViolationException;
 import dn.marketplace.core.exception.ResourceNotFoundException;
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.net.URI;
@@ -135,9 +138,18 @@ public class GlobalExceptionHandler {
     /**
      * Последний рубеж. Наружу — только correlation id, по которому ошибку
      * находят в логе.
+     * <p>
+     * Сначала проверяем, не объявило ли исключение свой 4xx-статус само: этот
+     * catch-all срабатывает раньше {@code ResponseStatusExceptionResolver},
+     * и без такой проверки доменный 404/409 превращался бы в 500.
      */
     @ExceptionHandler(Exception.class)
     public ProblemDetail handleUnexpected(Exception e) {
+        ProblemDetail declared = declaredClientError(e);
+        if (declared != null) {
+            return declared;
+        }
+
         String correlationId = newCorrelationId();
         log.error("Необработанная ошибка [correlationId={}]", correlationId, e);
 
@@ -145,6 +157,36 @@ public class GlobalExceptionHandler {
                 "Внутренняя ошибка сервера. Сообщите correlationId в поддержку.", TYPE_INTERNAL);
         problem.setProperty("correlationId", correlationId);
         return problem;
+    }
+
+    /**
+     * Исключения, которые сами знают свой клиентский статус:
+     * <ul>
+     *   <li>доменные с {@code @ResponseStatus(4xx)} — ядро не знает их типов,
+     *       поэтому читаем аннотацию, а не перечисляем классы;</li>
+     *   <li>спринговые {@link ErrorResponse}: несовпадение типа path-переменной
+     *       ({@code /accounts/abc}), отсутствующий {@code @RequestParam},
+     *       неподдерживаемый метод, валидация параметров без {@code @Validated}.</li>
+     * </ul>
+     * Возвращает {@code null}, если исключение ничего о себе не заявляет —
+     * тогда это действительно 500.
+     */
+    private ProblemDetail declaredClientError(Exception e) {
+        ResponseStatus declared = AnnotatedElementUtils.findMergedAnnotation(e.getClass(), ResponseStatus.class);
+        if (declared != null && declared.code().is4xxClientError()) {
+            String title = declared.reason().isEmpty() ? declared.code().getReasonPhrase() : declared.reason();
+            return problem(declared.code(), title, e.getMessage(), null);
+        }
+
+        if (e instanceof ErrorResponse errorResponse && errorResponse.getStatusCode().is4xxClientError()) {
+            HttpStatus status = HttpStatus.valueOf(errorResponse.getStatusCode().value());
+            String detail = errorResponse.getBody().getDetail();
+            return problem(status, "Некорректный запрос",
+                    detail == null ? status.getReasonPhrase() : detail,
+                    status == HttpStatus.BAD_REQUEST ? TYPE_VALIDATION : null);
+        }
+
+        return null;
     }
 
     private ProblemDetail problem(HttpStatus status, String title, String detail, URI type) {

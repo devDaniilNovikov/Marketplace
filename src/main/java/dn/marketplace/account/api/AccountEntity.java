@@ -29,6 +29,9 @@ public class AccountEntity {
     @Column(nullable = false,name = "user_name")
     private String username;
 
+    @Column(name = "email")
+    private String email;
+
 
 }
 

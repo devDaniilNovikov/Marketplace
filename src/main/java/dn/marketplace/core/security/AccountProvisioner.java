@@ -10,6 +10,7 @@ import java.util.UUID;
  * в правильную сторону: домен реализует порт ядра, ядро ничего не знает о домене.
  * Реализация — {@code dn.marketplace.account.AccountFacade} (задача B5).
  */
+@FunctionalInterface
 public interface AccountProvisioner {
 
     /**

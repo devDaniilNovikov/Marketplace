@@ -1,16 +1,17 @@
 package dn.marketplace.account.api.dto;
 
 
-import dn.marketplace.account.api.AccountEntity;
-import lombok.AllArgsConstructor;
 import lombok.Builder;
-import lombok.NoArgsConstructor;
 
-import javax.xml.crypto.Data;
 import java.util.List;
 import java.util.Map;
 
 
 @Builder
-public record AccountMapResponse(Map<String, List<AccountEntity>> accounts) {
+public record AccountMapResponse(int pageSize,
+                                 int pageNumber,
+                                 long totalElements,
+                                 int totalPages,
+                                 boolean hasNext,
+                                 Map<String, List<AccountResponse>> accounts) {
 }
