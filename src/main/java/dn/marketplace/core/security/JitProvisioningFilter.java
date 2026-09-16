@@ -52,6 +52,8 @@ public class JitProvisioningFilter extends OncePerRequestFilter {
         try {
             String username = jwt.getClaimAsString("preferred_username");
             if (username == null || username.isBlank()) {
+                // По дизайну claim есть всегда; если его нет — сломан mapper клиента в Keycloak
+                log.warn("В JWT нет preferred_username, как username используется sub={}", subject);
                 username = subject;
             }
             provisioner.provision(UUID.fromString(subject), username);

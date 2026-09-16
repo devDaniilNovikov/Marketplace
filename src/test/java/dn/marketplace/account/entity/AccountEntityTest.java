@@ -147,21 +147,141 @@ class AccountEntityTest {
                 .isInstanceOf(BusinessRuleViolationException.class);
     }
 
-    @ParameterizedTest
-    @CsvSource({
-            "approveSeller",
-            "revokeSeller"
-    })
-    void запрещённые_переходы_из_покупателя(String method) {
+    @Test
+    void истёкший_холд_не_сбрасывается_если_переход_запрещён() {
         AccountEntity account = buyer();
-        assertThatThrownBy(() -> invoke(account, method))
+        for (int i = 0; i < AccountEntity.MAX_SELLER_APPLICATIONS; i++) {
+            account.applyAsSeller(T0, HOLD);
+            if (i < AccountEntity.MAX_SELLER_APPLICATIONS - 1) {
+                account.rejectSeller("нет");
+            }
+        }
+        // 5-я заявка в SELLER_PENDING, холд выставлен и уже истёк — но из PENDING подать нельзя
+        assertThatThrownBy(() -> account.applyAsSeller(T0.plus(HOLD), HOLD))
                 .isInstanceOf(BusinessRuleViolationException.class);
+        assertThat(account.getSellerApplications())
+                .as("при 422 сущность не должна остаться полуизменённой")
+                .isEqualTo(5);
+        assertThat(account.getSellerApplicationHoldUntil()).isEqualTo(T0.plus(HOLD));
+    }
+
+    /**
+     * Полный граф переходов из раздела 3 спеки: 4 статуса × banned × 7 методов.
+     * Ожидание — статус после перехода либо 422 (BusinessRuleViolationException).
+     */
+    @ParameterizedTest(name = "{0} banned={1} → {2} ⇒ {3}")
+    @CsvSource({
+            // from,            banned, method,        expected
+            "BUYER,             false,  applyAsSeller, SELLER_PENDING",
+            "BUYER,             false,  approveSeller, 422",
+            "BUYER,             false,  rejectSeller,  422",
+            "BUYER,             false,  revokeSeller,  422",
+            "BUYER,             false,  ban,           BUYER",
+            "BUYER,             false,  unban,         422",
+            "BUYER,             false,  delete,        BUYER",
+            "BUYER,             true,   applyAsSeller, 422",
+            "BUYER,             true,   approveSeller, 422",
+            "BUYER,             true,   rejectSeller,  422",
+            "BUYER,             true,   revokeSeller,  422",
+            "BUYER,             true,   ban,           422",
+            "BUYER,             true,   unban,         BUYER",
+            "BUYER,             true,   delete,        BUYER",
+            "SELLER_PENDING,    false,  applyAsSeller, 422",
+            "SELLER_PENDING,    false,  approveSeller, SELLER",
+            "SELLER_PENDING,    false,  rejectSeller,  SELLER_REJECTED",
+            "SELLER_PENDING,    false,  revokeSeller,  422",
+            "SELLER_PENDING,    false,  ban,           SELLER_PENDING",
+            "SELLER_PENDING,    false,  unban,         422",
+            "SELLER_PENDING,    false,  delete,        SELLER_PENDING",
+            "SELLER_PENDING,    true,   applyAsSeller, 422",
+            "SELLER_PENDING,    true,   approveSeller, SELLER",
+            "SELLER_PENDING,    true,   rejectSeller,  SELLER_REJECTED",
+            "SELLER_PENDING,    true,   revokeSeller,  422",
+            "SELLER_PENDING,    true,   ban,           422",
+            "SELLER_PENDING,    true,   unban,         SELLER_PENDING",
+            "SELLER_PENDING,    true,   delete,        SELLER_PENDING",
+            "SELLER,            false,  applyAsSeller, 422",
+            "SELLER,            false,  approveSeller, 422",
+            "SELLER,            false,  rejectSeller,  422",
+            "SELLER,            false,  revokeSeller,  BUYER",
+            "SELLER,            false,  ban,           SELLER",
+            "SELLER,            false,  unban,         422",
+            "SELLER,            false,  delete,        SELLER",
+            "SELLER,            true,   applyAsSeller, 422",
+            "SELLER,            true,   approveSeller, 422",
+            "SELLER,            true,   rejectSeller,  422",
+            "SELLER,            true,   revokeSeller,  BUYER",
+            "SELLER,            true,   ban,           422",
+            "SELLER,            true,   unban,         SELLER",
+            "SELLER,            true,   delete,        SELLER",
+            "SELLER_REJECTED,   false,  applyAsSeller, SELLER_PENDING",
+            "SELLER_REJECTED,   false,  approveSeller, 422",
+            "SELLER_REJECTED,   false,  rejectSeller,  422",
+            "SELLER_REJECTED,   false,  revokeSeller,  422",
+            "SELLER_REJECTED,   false,  ban,           SELLER_REJECTED",
+            "SELLER_REJECTED,   false,  unban,         422",
+            "SELLER_REJECTED,   false,  delete,        SELLER_REJECTED",
+            "SELLER_REJECTED,   true,   applyAsSeller, 422",
+            "SELLER_REJECTED,   true,   approveSeller, 422",
+            "SELLER_REJECTED,   true,   rejectSeller,  422",
+            "SELLER_REJECTED,   true,   revokeSeller,  422",
+            "SELLER_REJECTED,   true,   ban,           422",
+            "SELLER_REJECTED,   true,   unban,         SELLER_REJECTED",
+            "SELLER_REJECTED,   true,   delete,        SELLER_REJECTED",
+    })
+    void таблица_переходов(BusinessStatus from, boolean banned, String method, String expected) {
+        AccountEntity account = inStatus(from, banned);
+
+        if ("422".equals(expected)) {
+            assertThatThrownBy(() -> invoke(account, method))
+                    .isInstanceOf(BusinessRuleViolationException.class);
+            assertThat(account.getBusinessStatus()).as("статус при 422 не меняется").isEqualTo(from);
+            assertThat(account.isBanned()).as("бан при 422 не меняется").isEqualTo(banned);
+            return;
+        }
+
+        invoke(account, method);
+        assertThat(account.getBusinessStatus()).isEqualTo(BusinessStatus.valueOf(expected));
+        switch (method) {
+            case "ban" -> assertThat(account.isBanned()).isTrue();
+            case "unban" -> assertThat(account.isBanned()).isFalse();
+            case "delete" -> {
+                assertThat(account.isDeleted()).isTrue();
+                assertThat(account.isBanned()).as("delete не трогает бан").isEqualTo(banned);
+            }
+            default -> assertThat(account.isBanned()).as("переход статуса не трогает бан").isEqualTo(banned);
+        }
+    }
+
+    private AccountEntity inStatus(BusinessStatus status, boolean banned) {
+        AccountEntity account = buyer();
+        switch (status) {
+            case BUYER -> { }
+            case SELLER_PENDING -> account.applyAsSeller(T0, HOLD);
+            case SELLER -> {
+                account.applyAsSeller(T0, HOLD);
+                account.approveSeller();
+            }
+            case SELLER_REJECTED -> {
+                account.applyAsSeller(T0, HOLD);
+                account.rejectSeller("нет");
+            }
+        }
+        if (banned) {
+            account.ban();
+        }
+        return account;
     }
 
     private static void invoke(AccountEntity account, String method) {
         switch (method) {
+            case "applyAsSeller" -> account.applyAsSeller(T0, HOLD);
             case "approveSeller" -> account.approveSeller();
+            case "rejectSeller" -> account.rejectSeller("причина");
             case "revokeSeller" -> account.revokeSeller();
+            case "ban" -> account.ban();
+            case "unban" -> account.unban();
+            case "delete" -> account.delete(T0);
             default -> throw new IllegalArgumentException(method);
         }
     }

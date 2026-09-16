@@ -9,8 +9,6 @@ import java.util.UUID;
 
 public interface AccountService {
 
-    AccountListResponse findAll(int pageNumber, int pageSize);
-
     AccountListResponse findAllByStatus(BusinessStatus status, int pageNumber, int pageSize);
 
     AccountResponse findById(UUID accountId);

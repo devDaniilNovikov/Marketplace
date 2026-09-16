@@ -20,6 +20,14 @@ public class UserUpdatedHandler {
     @Transactional
     @Retryable(retryFor = OptimisticLockingFailureException.class, backoff = @Backoff(delay = 50))
     public void handle(UserUpdatedEvent event) {
+        if (event.username() == null || event.username().isBlank()) {
+            log.warn("USER_UPDATED для {} без username проигнорирован", event.accountId());
+            return;
+        }
+        // REGISTER приходит раньше первого запроса к API, т.е. до JIT: без этой строки событие
+        // терялось бы, а снапшоты оставались пустыми до первого ручного изменения профиля.
+        // Тот же идемпотентный INSERT ... ON CONFLICT DO NOTHING, что и в сценарии 1.
+        accountRepository.insertIfAbsent(event.accountId(), event.username());
         accountRepository.findById(event.accountId()).ifPresent(account -> {
             if (account.isDeleted()) {
                 log.debug("USER_UPDATED для удалённого аккаунта {} проигнорирован", event.accountId());

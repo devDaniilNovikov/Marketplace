@@ -52,7 +52,13 @@
 ### Принятый риск (решение №5)
 Redis Pub/Sub — fire-and-forget. Митигация — G4 (сверка через Keycloak Admin REST).
 
-## Next Action
-Фаза B в коде закрыта. Осталось прогнать IT на Docker (`LiquibaseMigrationTest`, `AccountServiceIT`, `JdbcOutboxPublisherTest`, `MarketplaceApplicationTests`) и скопировать SPI-jar в `docker/keycloak/providers/`.
+### Принятые решения по сценарию 2 (ревью 2026-09-16)
+- Консьюмер `USER_UPDATED` потребляет канал строго по порядку (`SimpleAsyncTaskExecutor`, concurrencyLimit=1): иначе два события одного пользователя применялись бы в обратном порядке.
+- `REGISTER` приходит раньше JIT — консьюмер делает тот же `INSERT … ON CONFLICT DO NOTHING`, а не игнорирует событие.
+- SPI публикует после коммита транзакции Keycloak (`enlistAfterCompletion`), JSON — через `JsonSerialization` из keycloak-core; listener включён в `realm-export.json`.
+- `@EnableCaching` снят до фазы I (нет `CacheManager` → контекст не стартовал).
 
-Дальше — Фаза C (Product), не раньше зелёных IT.
+## Next Action
+Фаза B в коде закрыта, все IT на Docker зелёные (127 тестов). Осталось собрать и скопировать SPI-jar в `docker/keycloak/providers/` и вручную проверить сценарий 2 на compose-стеке.
+
+Дальше — Фаза C (Product).

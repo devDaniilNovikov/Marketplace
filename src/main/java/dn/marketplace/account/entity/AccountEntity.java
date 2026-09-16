@@ -12,7 +12,6 @@ import jakarta.persistence.Version;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import lombok.Setter;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 import org.springframework.data.domain.Persistable;
@@ -23,7 +22,7 @@ import java.util.UUID;
 
 /**
  * Проекция аккаунта маркетплейса. Id — {@code sub} из Keycloak.
- * Переходы статусов — методы этой сущности, сеттеров на статус/бан/удаление нет.
+ * Переходы статусов — методы этой сущности; профиль обновляет только {@link #applyProfile}. Сеттеров нет.
  */
 @Entity
 @Table(schema = "market_place", name = "accounts")
@@ -36,7 +35,6 @@ public class AccountEntity implements Persistable<UUID> {
     @Id
     private UUID id;
 
-    @Setter(AccessLevel.PACKAGE)
     @Column(name = "user_name", nullable = false)
     private String username;
 
@@ -47,15 +45,12 @@ public class AccountEntity implements Persistable<UUID> {
     @Column(nullable = false)
     private boolean banned;
 
-    @Setter(AccessLevel.PACKAGE)
     @Column(name = "email_snapshot")
     private String emailSnapshot;
 
-    @Setter(AccessLevel.PACKAGE)
     @Column(name = "first_name_snapshot")
     private String firstNameSnapshot;
 
-    @Setter(AccessLevel.PACKAGE)
     @Column(name = "last_name_snapshot")
     private String lastNameSnapshot;
 
@@ -104,12 +99,13 @@ public class AccountEntity implements Persistable<UUID> {
             throw new BusinessRuleViolationException(
                     "Повторная заявка возможна после " + sellerApplicationHoldUntil);
         }
+        if (businessStatus != BusinessStatus.BUYER && businessStatus != BusinessStatus.SELLER_REJECTED) {
+            throw new BusinessRuleViolationException("Заявку можно подать только из статуса покупателя или после отказа");
+        }
+        // Сброс истёкшего холда — только после всех предусловий: при 422 сущность остаётся нетронутой
         if (sellerApplicationHoldUntil != null) {
             sellerApplications = 0;
             sellerApplicationHoldUntil = null;
-        }
-        if (businessStatus != BusinessStatus.BUYER && businessStatus != BusinessStatus.SELLER_REJECTED) {
-            throw new BusinessRuleViolationException("Заявку можно подать только из статуса покупателя или после отказа");
         }
         rejectionReason = null;
         sellerApplications++;

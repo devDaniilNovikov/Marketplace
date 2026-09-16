@@ -50,9 +50,13 @@ services:
       KC_HTTP_PORT: 8080
     ports:
       - "8080:8080"
+    # SPI marketplace-user-updated (keycloak-spi/) публикует USER_UPDATED в этот Redis;
+    # listener уже включён в realm-export.json, jar кладётся в providers/ (см. keycloak-spi/README.md)
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       - ./docker/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
-      # Сюда ляжет SPI EventListener, публикующий USER_UPDATED в Redis (задача B8.2)
       - ./docker/keycloak/providers:/opt/keycloak/providers
     healthcheck:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '\"status\": \"UP\"'"]

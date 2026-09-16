@@ -1,5 +1,13 @@
 package dn.marketplace.db;
 
+import liquibase.command.CommandScope;
+import liquibase.command.core.RollbackCountCommandStep;
+import liquibase.command.core.UpdateCommandStep;
+import liquibase.command.core.helpers.DatabaseChangelogCommandStep;
+import liquibase.command.core.helpers.DbUrlConnectionArgumentsCommandStep;
+import liquibase.database.Database;
+import liquibase.database.DatabaseFactory;
+import liquibase.database.jvm.JdbcConnection;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,6 +23,8 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import javax.sql.DataSource;
+import java.sql.Connection;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,7 +55,7 @@ class LiquibaseMigrationTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.liquibase.enabled", () -> true);
-        registry.add("spring.liquibase.change-log", () -> "classpath:db/changelog/db.changelog-master.yaml");
+        registry.add("spring.liquibase.change-log", () -> "classpath:" + CHANGELOG);
         registry.add("spring.liquibase.liquibase-schema", () -> "public");
     }
 
@@ -57,8 +67,13 @@ class LiquibaseMigrationTest {
     static class MigrationOnlyApplication {
     }
 
+    private static final String CHANGELOG = "db/changelog/db.changelog-master.yaml";
+
     @Autowired
     JdbcTemplate jdbc;
+
+    @Autowired
+    DataSource dataSource;
 
     @Test
     @DisplayName("схема market_place создана")
@@ -151,6 +166,43 @@ class LiquibaseMigrationTest {
         assertThat(insertOutboxWithStatus(jdbc, "WHATEVER"))
                 .as("невалидный статус должен отклоняться базой, а не только Java-кодом")
                 .isFalse();
+    }
+
+    @Test
+    @DisplayName("каждый changeset откатывается своим --rollback и накатывается заново")
+    void every_changeset_rolls_back_and_reapplies() throws Exception {
+        Integer applied = jdbc.queryForObject("SELECT count(*) FROM public.databasechangelog", Integer.class);
+        assertThat(applied).isPositive();
+
+        try (Connection connection = dataSource.getConnection()) {
+            Database database = DatabaseFactory.getInstance()
+                    .findCorrectDatabaseImplementation(new JdbcConnection(connection));
+            database.setLiquibaseSchemaName("public");
+
+            // Откат всех changeset'ов: если хоть один --rollback невалиден, здесь будет исключение
+            new CommandScope(RollbackCountCommandStep.COMMAND_NAME)
+                    .addArgumentValue(DbUrlConnectionArgumentsCommandStep.DATABASE_ARG, database)
+                    .addArgumentValue(DatabaseChangelogCommandStep.CHANGELOG_FILE_ARG, CHANGELOG)
+                    .addArgumentValue(RollbackCountCommandStep.COUNT_ARG, applied)
+                    .execute();
+
+            Integer schemas = jdbc.queryForObject(
+                    "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'market_place'",
+                    Integer.class);
+            assertThat(schemas).as("после полного отката схемы market_place быть не должно").isZero();
+
+            new CommandScope(UpdateCommandStep.COMMAND_NAME)
+                    .addArgumentValue(DbUrlConnectionArgumentsCommandStep.DATABASE_ARG, database)
+                    .addArgumentValue(DatabaseChangelogCommandStep.CHANGELOG_FILE_ARG, CHANGELOG)
+                    .execute();
+        }
+
+        Integer reapplied = jdbc.queryForObject("SELECT count(*) FROM public.databasechangelog", Integer.class);
+        assertThat(reapplied).isEqualTo(applied);
+        Integer accounts = jdbc.queryForObject(
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'market_place' AND table_name = 'accounts'",
+                Integer.class);
+        assertThat(accounts).isOne();
     }
 
     private boolean insertOutboxWithStatus(JdbcTemplate jdbc, String status) {

@@ -33,11 +33,6 @@ public class AccountServiceImpl implements AccountService {
     private final AccountSellerApplicationProperties sellerApplicationProperties;
 
     @Override
-    public AccountListResponse findAll(int pageNumber, int pageSize) {
-        return toList(accountRepository.findAll(PageRequest.of(pageNumber, pageSize)));
-    }
-
-    @Override
     public AccountListResponse findAllByStatus(BusinessStatus status, int pageNumber, int pageSize) {
         return toList(accountRepository.findAllByBusinessStatusAndDeletedAtIsNull(
                 status, PageRequest.of(pageNumber, pageSize)));

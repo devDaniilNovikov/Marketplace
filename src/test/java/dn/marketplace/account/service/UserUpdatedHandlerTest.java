@@ -14,6 +14,10 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -37,6 +41,26 @@ class UserUpdatedHandlerTest {
         assertThat(entity.getEmailSnapshot()).isEqualTo("n@e.e");
         assertThat(entity.getFirstNameSnapshot()).isEqualTo("N");
         assertThat(entity.getLastNameSnapshot()).isEqualTo("E");
+    }
+
+    @Test
+    void register_до_jit_создаёт_строку_тем_же_insert() {
+        UUID id = UUID.randomUUID();
+        when(accountRepository.findById(id)).thenReturn(Optional.empty());
+
+        handler.handle(new UserUpdatedEvent(id, "fresh", "f@e.e", "F", "E"));
+
+        verify(accountRepository).insertIfAbsent(id, "fresh");
+    }
+
+    @Test
+    void без_username_игнорируется() {
+        UUID id = UUID.randomUUID();
+
+        handler.handle(new UserUpdatedEvent(id, " ", "f@e.e", "F", "E"));
+
+        verify(accountRepository, never()).insertIfAbsent(eq(id), any());
+        verify(accountRepository, never()).findById(id);
     }
 
     @Test

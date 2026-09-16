@@ -6,15 +6,19 @@ import dn.marketplace.account.service.AccountService;
 import dn.marketplace.core.security.JitProvisioningFilter;
 import dn.marketplace.core.security.SecurityConfig;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.security.oauth2.server.resource.autoconfigure.web.OAuth2ResourceServerWebSecurityAutoConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import java.util.UUID;
 
@@ -25,6 +29,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -114,6 +119,82 @@ class AccountControllerTest {
         mockMvc.perform(get("/api/v1/accounts/{id}", id)
                         .with(jwt().jwt(jwt -> jwt.subject(id.toString()))))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void unban_себя_403() throws Exception {
+        UUID id = UUID.randomUUID();
+        mockMvc.perform(delete("/api/v1/accounts/{id}/ban", id)
+                        .with(jwt().jwt(jwt -> jwt.subject(id.toString()))
+                                .authorities(new SimpleGrantedAuthority("ROLE_ADMIN"))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void getById_чужой_не_админ_403() throws Exception {
+        mockMvc.perform(get("/api/v1/accounts/{id}", UUID.randomUUID())
+                        .with(jwt().jwt(jwt -> jwt.subject(UUID.randomUUID().toString()))))
+                .andExpect(status().isForbidden());
+    }
+
+    /**
+     * Строки таблицы раздела 7 спеки с правилом hasRole('ADMIN'): без токена — 401,
+     * с токеном без роли — 403, админ (с чужим sub) — проходит.
+     */
+    @ParameterizedTest(name = "{0} {1}")
+    @CsvSource({
+            "GET,    /api/v1/accounts/by-status?status=BUYER",
+            "GET,    /api/v1/accounts/by-username/alice",
+            "GET,    /api/v1/accounts/{id}",
+            "POST,   /api/v1/accounts/{id}/seller-application/approve",
+            "POST,   /api/v1/accounts/{id}/seller-application/reject",
+            "DELETE, /api/v1/accounts/{id}/seller-status",
+            "POST,   /api/v1/accounts/{id}/ban",
+            "DELETE, /api/v1/accounts/{id}/ban",
+            "DELETE, /api/v1/accounts/{id}",
+    })
+    void админские_эндпоинты(String method, String path) throws Exception {
+        UUID id = UUID.randomUUID();
+
+        mockMvc.perform(adminRequest(method, path, id))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(adminRequest(method, path, id)
+                        .with(jwt().jwt(jwt -> jwt.subject(UUID.randomUUID().toString()))))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(adminRequest(method, path, id)
+                        .with(jwt().jwt(jwt -> jwt.subject(UUID.randomUUID().toString()))
+                                .authorities(new SimpleGrantedAuthority("ROLE_ADMIN"))))
+                .andExpect(status().is2xxSuccessful());
+    }
+
+    /**
+     * Строки с isAuthenticated(): без токена — 401, любой токен — проходит, id берётся из sub.
+     */
+    @ParameterizedTest(name = "{0} {1}")
+    @CsvSource({
+            "GET,    /api/v1/accounts/me",
+            "POST,   /api/v1/accounts/me/seller-application",
+            "DELETE, /api/v1/accounts/me",
+    })
+    void эндпоинты_владельца(String method, String path) throws Exception {
+        UUID id = UUID.randomUUID();
+
+        mockMvc.perform(request(HttpMethod.valueOf(method), path))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(request(HttpMethod.valueOf(method), path)
+                        .with(jwt().jwt(jwt -> jwt.subject(id.toString()))))
+                .andExpect(status().is2xxSuccessful());
+    }
+
+    private static MockHttpServletRequestBuilder adminRequest(String method, String path, UUID id) {
+        var builder = request(HttpMethod.valueOf(method), path.replace("{id}", id.toString()));
+        if (path.endsWith("/reject")) {
+            builder.contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"причина\"}");
+        }
+        return builder;
     }
 
     private static AccountResponse response(UUID id, BusinessStatus status) {

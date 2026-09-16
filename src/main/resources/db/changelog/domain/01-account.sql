@@ -1,7 +1,7 @@
 --liquibase formatted sql
 
 --changeset market:01-account-table
---comment: V4 SSOT. Таблица public.account с колонкой role заменена целиком — прод-данных нет. id приходит из Keycloak, без default.
+--comment: V4 SSOT. Таблица public.account с колонкой role заменена целиком — прод-данных нет. id приходит из Keycloak, без default. Снапшоты имён VARCHAR(255) — как в Keycloak, иначе длинное имя роняло бы консьюмер USER_UPDATED.
 CREATE TABLE market_place.accounts
 (
     id                              UUID PRIMARY KEY,
@@ -9,8 +9,8 @@ CREATE TABLE market_place.accounts
     business_status                 VARCHAR(32)              NOT NULL DEFAULT 'BUYER',
     banned                          BOOLEAN                  NOT NULL DEFAULT FALSE,
     email_snapshot                  VARCHAR(255),
-    first_name_snapshot             VARCHAR(100),
-    last_name_snapshot              VARCHAR(100),
+    first_name_snapshot             VARCHAR(255),
+    last_name_snapshot              VARCHAR(255),
     rejection_reason                TEXT,
     seller_applications             SMALLINT                 NOT NULL DEFAULT 0,
     seller_application_hold_until   TIMESTAMP WITH TIME ZONE,

@@ -1,21 +1,37 @@
 package dn.marketplace.keycloak;
 
+import org.jboss.logging.Logger;
 import org.keycloak.events.Event;
 import org.keycloak.events.EventListenerProvider;
 import org.keycloak.events.EventType;
 import org.keycloak.events.admin.AdminEvent;
+import org.keycloak.models.AbstractKeycloakTransaction;
 import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.util.JsonSerialization;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
+import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 
 /**
- * Слушает события профиля Keycloak и публикует JSON в Redis.
- * Поля совпадают с {@code UserUpdatedEvent} монолита (без Jackson, чтобы не тащить его в SPI).
+ * Слушает события профиля Keycloak и публикует JSON {@code USER_UPDATED} в Redis.
+ * <p>
+ * Поля совпадают с {@code UserUpdatedEvent} монолита. Значения берутся из {@link UserModel},
+ * а не из {@code event.getDetails()}: ключи details отличаются по типу события
+ * ({@code first_name} у REGISTER, {@code updated_first_name} у UPDATE_PROFILE), а модель
+ * всегда содержит итоговое состояние профиля.
+ * <p>
+ * Публикация отложена до коммита транзакции Keycloak: иначе откат после {@code onEvent}
+ * оставил бы в монолите «фантомное» обновление.
  */
 public class UserUpdatedEventListener implements EventListenerProvider {
+
+    private static final Logger LOG = Logger.getLogger(UserUpdatedEventListener.class);
 
     private static final Set<EventType> PROFILE_EVENTS = Set.of(
             EventType.UPDATE_PROFILE,
@@ -25,10 +41,6 @@ public class UserUpdatedEventListener implements EventListenerProvider {
     private final JedisPool pool;
     private final String channel;
     private final KeycloakSession session;
-
-    public UserUpdatedEventListener(JedisPool pool, String channel) {
-        this(pool, channel, null);
-    }
 
     UserUpdatedEventListener(JedisPool pool, String channel, KeycloakSession session) {
         this.pool = pool;
@@ -42,26 +54,38 @@ public class UserUpdatedEventListener implements EventListenerProvider {
             return;
         }
         String userId = event.getUserId();
-        if (userId == null) {
+        if (userId == null || event.getRealmId() == null) {
             return;
         }
-        String username = detail(event, "username");
-        String email = detail(event, "email");
-        String firstName = detail(event, "first_name");
-        String lastName = detail(event, "last_name");
-        if (session != null && event.getRealmId() != null) {
-            var realm = session.realms().getRealm(event.getRealmId());
-            if (realm != null) {
-                UserModel user = session.users().getUserById(realm, userId);
-                if (user != null) {
-                    username = user.getUsername();
-                    email = user.getEmail();
-                    firstName = user.getFirstName();
-                    lastName = user.getLastName();
-                }
-            }
+        RealmModel realm = session.realms().getRealm(event.getRealmId());
+        if (realm == null) {
+            return;
         }
-        publish(userId, username, email, firstName, lastName);
+        UserModel user = session.users().getUserById(realm, userId);
+        if (user == null) {
+            LOG.warnf("USER_UPDATED пропущен: пользователь %s не найден в realm %s", userId, realm.getName());
+            return;
+        }
+
+        String json;
+        try {
+            json = toJson(userId, user);
+        } catch (IOException e) {
+            LOG.errorf(e, "Не удалось сериализовать USER_UPDATED для %s", userId);
+            return;
+        }
+
+        session.getTransactionManager().enlistAfterCompletion(new AbstractKeycloakTransaction() {
+            @Override
+            protected void commitImpl() {
+                publish(json);
+            }
+
+            @Override
+            protected void rollbackImpl() {
+                // транзакция Keycloak откатилась — профиль не изменился, публиковать нечего
+            }
+        });
     }
 
     @Override
@@ -73,31 +97,24 @@ public class UserUpdatedEventListener implements EventListenerProvider {
     public void close() {
     }
 
-    private void publish(String accountId, String username, String email, String firstName, String lastName) {
-        String json = """
-                {"accountId":"%s","username":%s,"email":%s,"firstName":%s,"lastName":%s}
-                """.formatted(
-                accountId,
-                jsonString(username),
-                jsonString(email),
-                jsonString(firstName),
-                jsonString(lastName));
+    static String toJson(String accountId, UserModel user) throws IOException {
+        // LinkedHashMap, а не Map.of: значения могут быть null, порядок полей — как в контракте
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("accountId", accountId);
+        payload.put("username", user.getUsername());
+        payload.put("email", user.getEmail());
+        payload.put("firstName", user.getFirstName());
+        payload.put("lastName", user.getLastName());
+        return JsonSerialization.writeValueAsString(payload);
+    }
+
+    private void publish(String json) {
         try (Jedis jedis = pool.getResource()) {
             jedis.publish(channel, json);
+        } catch (RuntimeException e) {
+            // Pub/Sub — fire-and-forget (SCENARIOS.md, сценарий 2); падение Redis не должно
+            // ронять запрос пользователя в Keycloak. Расхождение закроет сверка G4.
+            LOG.errorf(e, "Не удалось опубликовать USER_UPDATED в канал %s", channel);
         }
-    }
-
-    private static String detail(Event event, String key) {
-        if (event.getDetails() == null) {
-            return null;
-        }
-        return event.getDetails().get(key);
-    }
-
-    private static String jsonString(String value) {
-        if (value == null) {
-            return "null";
-        }
-        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 }

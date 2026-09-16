@@ -6,6 +6,9 @@
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
   "accessTokenLifespan": 1800,
+  "eventsEnabled": true,
+  "eventsListeners": ["jboss-logging", "marketplace-user-updated"],
+  "enabledEventTypes": ["REGISTER", "UPDATE_PROFILE", "UPDATE_EMAIL"],
   "roles": {
     "realm": [
       { "name": "BUYER",  "description": "Покупатель: оформление заказов" },
