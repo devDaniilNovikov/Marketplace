@@ -18,8 +18,14 @@ dependencies {
     // Логгер сервера Keycloak; в дистрибутиве есть, в jar SPI не кладём
     compileOnly("org.jboss.logging:jboss-logging:3.6.1.Final")
     implementation("redis.clients:jedis:5.2.0")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks.jar {
     archiveFileName.set("marketplace-keycloak-user-events.jar")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }

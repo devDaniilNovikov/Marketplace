@@ -9,20 +9,17 @@ import org.keycloak.models.AbstractKeycloakTransaction;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
-import org.keycloak.util.JsonSerialization;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
-import java.io.IOException;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.time.Instant;
 import java.util.Set;
 
 /**
  * Слушает события профиля Keycloak и публикует JSON {@code USER_UPDATED} в Redis.
  * <p>
- * Поля совпадают с {@code UserUpdatedEvent} монолита. Значения берутся из {@link UserModel},
- * а не из {@code event.getDetails()}: ключи details отличаются по типу события
+ * Поля домена совпадают с {@code UserUpdatedEvent} монолита; на канале ещё {@code issuedAt} и {@code mac}.
+ * Значения берутся из {@link UserModel}, а не из {@code event.getDetails()}: ключи details отличаются по типу события
  * ({@code first_name} у REGISTER, {@code updated_first_name} у UPDATE_PROFILE), а модель
  * всегда содержит итоговое состояние профиля.
  * <p>
@@ -40,11 +37,13 @@ public class UserUpdatedEventListener implements EventListenerProvider {
 
     private final JedisPool pool;
     private final String channel;
+    private final String macSecret;
     private final KeycloakSession session;
 
-    UserUpdatedEventListener(JedisPool pool, String channel, KeycloakSession session) {
+    UserUpdatedEventListener(JedisPool pool, String channel, String macSecret, KeycloakSession session) {
         this.pool = pool;
         this.channel = channel;
+        this.macSecret = macSecret;
         this.session = session;
     }
 
@@ -67,13 +66,7 @@ public class UserUpdatedEventListener implements EventListenerProvider {
             return;
         }
 
-        String json;
-        try {
-            json = toJson(userId, user);
-        } catch (IOException e) {
-            LOG.errorf(e, "Не удалось сериализовать USER_UPDATED для %s", userId);
-            return;
-        }
+        String json = toJson(userId, user, macSecret, Instant.now());
 
         session.getTransactionManager().enlistAfterCompletion(new AbstractKeycloakTransaction() {
             @Override
@@ -97,15 +90,15 @@ public class UserUpdatedEventListener implements EventListenerProvider {
     public void close() {
     }
 
-    static String toJson(String accountId, UserModel user) throws IOException {
-        // LinkedHashMap, а не Map.of: значения могут быть null, порядок полей — как в контракте
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("accountId", accountId);
-        payload.put("username", user.getUsername());
-        payload.put("email", user.getEmail());
-        payload.put("firstName", user.getFirstName());
-        payload.put("lastName", user.getLastName());
-        return JsonSerialization.writeValueAsString(payload);
+    static String toJson(String accountId, UserModel user, String macSecret, Instant issuedAt) {
+        return UserUpdatedEventMac.wireJson(
+                accountId,
+                user.getUsername(),
+                user.getEmail(),
+                user.getFirstName(),
+                user.getLastName(),
+                issuedAt.toEpochMilli(),
+                macSecret);
     }
 
     private void publish(String json) {

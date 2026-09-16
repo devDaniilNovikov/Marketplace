@@ -9,8 +9,8 @@ import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 
 /**
- * Фабрика SPI: публикует USER_UPDATED в Redis Pub/Sub.
- * Контракт JSON — {@code dn.marketplace.account.api.event.UserUpdatedEvent}.
+ * Фабрика SPI: публикует USER_UPDATED в Redis Pub/Sub с HMAC.
+ * Канон JSON — {@code UserUpdatedEventMac}; секрет — {@code KEYCLOAK_EVENTS_MAC_SECRET}.
  */
 public class UserUpdatedEventListenerFactory implements EventListenerProviderFactory {
 
@@ -18,10 +18,11 @@ public class UserUpdatedEventListenerFactory implements EventListenerProviderFac
 
     private JedisPool pool;
     private String channel;
+    private String macSecret;
 
     @Override
     public EventListenerProvider create(KeycloakSession session) {
-        return new UserUpdatedEventListener(pool, channel, session);
+        return new UserUpdatedEventListener(pool, channel, macSecret, session);
     }
 
     @Override
@@ -29,6 +30,10 @@ public class UserUpdatedEventListenerFactory implements EventListenerProviderFac
         String host = envOr("REDIS_HOST", config.get("redisHost", "redis"));
         int port = Integer.parseInt(envOr("REDIS_PORT", config.get("redisPort", "6379")));
         channel = envOr("KEYCLOAK_EVENTS_CHANNEL", config.get("channel", "keycloak.events.user"));
+        macSecret = envOr("KEYCLOAK_EVENTS_MAC_SECRET", config.get("macSecret", ""));
+        if (macSecret.isBlank()) {
+            throw new IllegalStateException("KEYCLOAK_EVENTS_MAC_SECRET не задан — SPI не публикует USER_UPDATED без HMAC");
+        }
         pool = new JedisPool(new JedisPoolConfig(), host, port);
     }
 

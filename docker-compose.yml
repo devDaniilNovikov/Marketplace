@@ -48,6 +48,8 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_HTTP_PORT: 8080
+      # HMAC USER_UPDATED; тот же KEYCLOAK_EVENTS_MAC_SECRET нужен монолиту на хосте
+      KEYCLOAK_EVENTS_MAC_SECRET: ${KEYCLOAK_EVENTS_MAC_SECRET:-marketplace-dev-events-mac}
     ports:
       - "8080:8080"
     # SPI marketplace-user-updated (keycloak-spi/) публикует USER_UPDATED в этот Redis;
