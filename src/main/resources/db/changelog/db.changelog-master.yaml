@@ -9,3 +9,7 @@ databaseChangeLog:
   # --- Домены ---
   - include:
       file: db/changelog/domain/01-account.sql
+  - include:
+      file: db/changelog/domain/02-product.sql
+  - include:
+      file: db/changelog/domain/03-order.sql

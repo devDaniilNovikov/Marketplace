@@ -1,6 +1,5 @@
 package dn.marketplace.architecture;
 
-import com.tngtech.archunit.core.domain.JavaModifier;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
@@ -39,35 +38,22 @@ class ArchitectureTest {
                     .should().resideInAPackage("dn.marketplace.*.entity..")
                     .as("JPA-сущности должны лежать в dn.marketplace.<домен>.entity, а не в публичном api"));
 
-    /** Нарушается сейчас: AccountEntity, OrderEntity и ProductEntity объявлены public. */
-    @ArchTest
-    static final ArchRule entities_are_package_private = FreezingArchRule.freeze(
-            classes().that().areAnnotatedWith(Entity.class)
-                    .should().notHaveModifier(JavaModifier.PUBLIC)
-                    .as("JPA-сущности должны быть package-private: инкапсуляция домена"));
-
-    /** Нарушается сейчас: AccountRepository лежит в dn.marketplace.account.api.repository. */
+    /** Нарушается сейчас: OrderEntity и ProductEntity всё ещё в api (фазы D/C). */
     @ArchTest
     static final ArchRule repositories_live_in_the_repository_package = FreezingArchRule.freeze(
             classes().that().areAssignableTo(Repository.class)
                     .should().resideInAPackage("dn.marketplace.*.repository..")
                     .as("Spring Data интерфейсы должны лежать в dn.marketplace.<домен>.repository"));
 
-    /** Нарушается сейчас: AccountRepository объявлен public. */
-    @ArchTest
-    static final ArchRule repositories_are_package_private = FreezingArchRule.freeze(
-            classes().that().areAssignableTo(Repository.class)
-                    .should().notHaveModifier(JavaModifier.PUBLIC)
-                    .as("Репозитории должны быть package-private: наружу домен смотрит через *Facade"));
+    // Package-private на entity/repository снят (решение №9): подпакеты и package-private
+    // в Java несовместимы. Изоляцию держит domainInternalsAreHidden.
 
     // ------------------------------------------------------------------
     // Контракт наружу: DTO не тащат за собой модель БД
     // ------------------------------------------------------------------
 
     /**
-     * Нарушается сейчас: AccountListResponse и AccountMapResponse отдают AccountEntity.
-     * Это не только утечка модели: сериализация managed-сущности вне транзакции даёт
-     * LazyInitializationException, а схема БД становится публичным контрактом API.
+     * DTO не должны ссылаться на JPA-сущности. Стор уменьшается по мере доменов.
      */
     @ArchTest
     static final ArchRule dto_do_not_expose_entities = FreezingArchRule.freeze(

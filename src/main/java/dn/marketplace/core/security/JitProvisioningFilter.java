@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -18,21 +19,12 @@ import java.util.UUID;
 
 /**
  * JIT-Provisioning (SCENARIOS.md, сценарий 1).
- * <p>
- * Стоит сразу после аутентификации по JWT и до контроллеров, поэтому к моменту
- * входа в бизнес-логику строка {@code accounts} гарантированно существует.
- * Это снимает необходимость проверять "а есть ли аккаунт" в каждом сервисе.
- * <p>
- * Домен вызывается через порт {@link AccountProvisioner}, а не напрямую:
- * пока задача B5 не реализована, бина нет, и фильтр просто пропускает запрос —
- * иначе приложение не поднялось бы до конца Фазы B.
  */
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class JitProvisioningFilter extends OncePerRequestFilter {
 
-    /** ObjectProvider, а не прямая инъекция: до задачи B5 реализации порта нет. */
     private final ObjectProvider<AccountProvisioner> accountProvisioner;
 
     @Override
@@ -43,26 +35,26 @@ public class JitProvisioningFilter extends OncePerRequestFilter {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
         if (authentication instanceof JwtAuthenticationToken jwtAuthentication) {
-            provisionQuietly(jwtAuthentication.getToken().getSubject());
+            provisionQuietly(jwtAuthentication.getToken());
         }
 
         filterChain.doFilter(request, response);
     }
 
-    /**
-     * Провал провижининга не должен превращаться в 500 на пользовательском запросе:
-     * до бизнес-логики дело всё равно дойдёт, а отсутствие строки всплывёт там
-     * осмысленной доменной ошибкой.
-     */
-    private void provisionQuietly(String subject) {
+    private void provisionQuietly(Jwt jwt) {
         AccountProvisioner provisioner = accountProvisioner.getIfAvailable();
         if (provisioner == null) {
-            log.debug("AccountProvisioner ещё не реализован (задача B5), JIT пропущен");
+            log.debug("AccountProvisioner недоступен, JIT пропущен");
             return;
         }
 
+        String subject = jwt.getSubject();
         try {
-            provisioner.provision(UUID.fromString(subject));
+            String username = jwt.getClaimAsString("preferred_username");
+            if (username == null || username.isBlank()) {
+                username = subject;
+            }
+            provisioner.provision(UUID.fromString(subject), username);
         } catch (IllegalArgumentException e) {
             log.warn("claim sub не является UUID: {}", subject);
         } catch (RuntimeException e) {
@@ -70,7 +62,6 @@ public class JitProvisioningFilter extends OncePerRequestFilter {
         }
     }
 
-    /** На служебных эндпоинтах аккаунтов не бывает — не ходим в базу зря. */
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         return request.getRequestURI().startsWith("/actuator");

@@ -108,6 +108,21 @@ class LiquibaseMigrationTest {
     }
 
     @Test
+    @DisplayName("accounts в схеме market_place, без колонки role")
+    void accounts_table_matches_ssot(JdbcTemplate jdbc) {
+        List<String> columns = jdbc.queryForList("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'market_place' AND table_name = 'accounts'
+                """, String.class);
+
+        assertThat(columns)
+                .contains("id", "user_name", "business_status", "banned", "email_snapshot",
+                        "version", "deleted_at", "seller_applications", "rejection_reason")
+                .doesNotContain("role");
+    }
+
+    @Test
     @DisplayName("индекс поллера частичный: SENT и DEAD в него не попадают")
     void poll_index_is_partial(JdbcTemplate jdbc) {
         String definition = jdbc.queryForObject("""

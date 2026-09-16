@@ -1,0 +1,2 @@
+Class <dn.marketplace.order.api.OrderEntity> does not reside in a package 'dn.marketplace.*.entity..' in (OrderEntity.java:0)
+Class <dn.marketplace.product.api.ProductEntity> does not reside in a package 'dn.marketplace.*.entity..' in (ProductEntity.java:0)
