@@ -46,6 +46,8 @@
 ---
 
 ## Часть 3: План разработки (Current)
-*   📌 **Текущая активная задача и контекст ИИ-агента:** **`.agents/MEMORY.md`**.
-*   📌 **Глобальный бэклог:** **`.agents/TASKS.md`**.
-*   📌 **Порядок фаз и зависимости:** **`.agents/PLAN.md`**.
+*   📌 **GSD:** **`.planning/`** (`PROJECT.md`, `ROADMAP.md`, `STATE.md`). Фазы 1–7 + 2.1.
+*   📌 **Сабагенты фаз:** **`.planning/AGENTS.md`**, файлы в `.claude/agents/` и `.cursor/agents/`.
+*   📌 **Контекст решений:** **`.agents/MEMORY.md`**.
+*   📌 **Бэклог (дубль чеклиста):** **`.agents/TASKS.md`**.
+*   📌 **Порядок и зависимости:** **`.agents/PLAN.md`**.

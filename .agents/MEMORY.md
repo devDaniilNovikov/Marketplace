@@ -59,8 +59,10 @@ Redis Pub/Sub — fire-and-forget. Митигация — G4 (сверка че�
 - `@EnableCaching` снят до фазы I (нет `CacheManager` → контекст не стартовал).
 
 ## Next Action
-1. B9: `./gradlew :keycloak-spi:jar` → `docker/keycloak/providers/`, перезапуск Keycloak.
-2. B10–B11: ручной сценарий 1 (JWT → `accounts`) и сценарий 2 (`USER_UPDATED`).
-3. C0: спека Product — до любого `02-product.sql`. Параллельно можно начинать F (поллер outbox): B уже пишет события.
+GSD инициализирован (`.planning/`). Текущая позиция — Phase 2.1.
 
-Не начинать D (Order), пока нет `ProductFacade.reserve`.
+1. `/gsd-plan-phase 2.1` или агент `gsd-phase-02-account-compose` — SPI-jar + сценарии 1–2.
+2. `/gsd-discuss-phase 3` / `gsd-phase-03-product` — спека C0 до SQL.
+3. Параллельно: `gsd-phase-04-outbox`.
+
+`/gsd-add-tests 2` теперь видит SUMMARY фазы Account.
