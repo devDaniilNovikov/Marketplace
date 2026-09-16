@@ -13,6 +13,8 @@ import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import org.springframework.data.domain.Persistable;
 
 import java.time.Duration;
@@ -60,6 +62,8 @@ public class AccountEntity implements Persistable<UUID> {
     @Column(name = "rejection_reason")
     private String rejectionReason;
 
+    // SMALLINT в DDL: без JdbcTypeCode Hibernate 7 ждёт INTEGER и падает на ddl-auto=validate
+    @JdbcTypeCode(SqlTypes.SMALLINT)
     @Column(name = "seller_applications", nullable = false)
     private int sellerApplications;
 

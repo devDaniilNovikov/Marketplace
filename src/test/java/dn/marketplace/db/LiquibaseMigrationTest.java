@@ -2,6 +2,7 @@ package dn.marketplace.db;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
@@ -56,9 +57,12 @@ class LiquibaseMigrationTest {
     static class MigrationOnlyApplication {
     }
 
+    @Autowired
+    JdbcTemplate jdbc;
+
     @Test
     @DisplayName("схема market_place создана")
-    void schema_is_created(JdbcTemplate jdbc) {
+    void schema_is_created() {
         Integer count = jdbc.queryForObject(
                 "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'market_place'",
                 Integer.class);
@@ -68,7 +72,7 @@ class LiquibaseMigrationTest {
 
     @Test
     @DisplayName("общая триггерная функция set_updated_at доступна")
-    void trigger_function_exists(JdbcTemplate jdbc) {
+    void trigger_function_exists() {
         Integer count = jdbc.queryForObject("""
                 SELECT count(*)
                 FROM pg_proc p
@@ -81,7 +85,7 @@ class LiquibaseMigrationTest {
 
     @Test
     @DisplayName("outbox_messages имеет колонки, нужные воркеру с retry")
-    void outbox_has_worker_columns(JdbcTemplate jdbc) {
+    void outbox_has_worker_columns() {
         List<String> columns = jdbc.queryForList("""
                 SELECT column_name
                 FROM information_schema.columns
@@ -95,7 +99,7 @@ class LiquibaseMigrationTest {
 
     @Test
     @DisplayName("aggregate_id хранится как UUID, а не как строка")
-    void aggregate_id_is_uuid(JdbcTemplate jdbc) {
+    void aggregate_id_is_uuid() {
         String type = jdbc.queryForObject("""
                 SELECT data_type
                 FROM information_schema.columns
@@ -109,7 +113,7 @@ class LiquibaseMigrationTest {
 
     @Test
     @DisplayName("accounts в схеме market_place, без колонки role")
-    void accounts_table_matches_ssot(JdbcTemplate jdbc) {
+    void accounts_table_matches_ssot() {
         List<String> columns = jdbc.queryForList("""
                 SELECT column_name
                 FROM information_schema.columns
@@ -124,7 +128,7 @@ class LiquibaseMigrationTest {
 
     @Test
     @DisplayName("индекс поллера частичный: SENT и DEAD в него не попадают")
-    void poll_index_is_partial(JdbcTemplate jdbc) {
+    void poll_index_is_partial() {
         String definition = jdbc.queryForObject("""
                 SELECT indexdef FROM pg_indexes
                 WHERE schemaname = 'market_place' AND indexname = 'idx_outbox_poll'
@@ -139,7 +143,7 @@ class LiquibaseMigrationTest {
 
     @Test
     @DisplayName("CHECK на status не пропускает произвольные значения")
-    void status_check_constraint_is_enforced(JdbcTemplate jdbc) {
+    void status_check_constraint_is_enforced() {
         assertThat(insertOutboxWithStatus(jdbc, "PENDING"))
                 .as("валидный статус должен проходить")
                 .isTrue();
