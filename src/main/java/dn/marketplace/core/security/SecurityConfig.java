@@ -24,7 +24,7 @@ public class SecurityConfig {
     private final JitProvisioningFilter jitProvisioningFilter;
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         return http
                 // Stateless API с Bearer-токеном: CSRF-токену негде храниться и нечего защищать
                 .csrf(csrf -> csrf.disable())
@@ -44,7 +44,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    JwtAuthenticationConverter jwtAuthenticationConverter() {
+    public JwtAuthenticationConverter jwtAuthenticationConverter() {
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
         converter.setJwtGrantedAuthoritiesConverter(new KeycloakRoleConverter());
         return converter;

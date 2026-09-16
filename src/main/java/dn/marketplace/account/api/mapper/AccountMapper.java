@@ -1,8 +1,11 @@
 package dn.marketplace.account.api.mapper;
 
 import dn.marketplace.account.api.AccountEntity;
+import dn.marketplace.account.api.dto.AccountListResponse;
+import dn.marketplace.account.api.dto.AccountRequest;
 import dn.marketplace.account.api.dto.AccountResponse;
 import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
 import org.mapstruct.ReportingPolicy;
 
 import java.util.List;
@@ -18,4 +21,11 @@ public interface AccountMapper {
     AccountResponse toResponse(AccountEntity entity);
 
     List<AccountResponse> toResponseList(List<AccountEntity> entities);
+
+    @Mapping(target = "id", ignore = true)
+    @Mapping(target = "status",ignore = true)
+    AccountEntity toEntity(AccountRequest accountRequest);
+
+    List<AccountEntity> toEntityList(List<AccountRequest> accountRequests);
+
 }
