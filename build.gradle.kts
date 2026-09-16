@@ -58,6 +58,12 @@ dependencies {
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
 
+    // --- Мапперы: Entity <-> DTO ---
+    implementation("org.mapstruct:mapstruct:1.6.3")
+    annotationProcessor("org.mapstruct:mapstruct-processor:1.6.3")
+    // Порядок важен: должен генерироваться после Lombok, иначе MapStruct не увидит @Getter/@Setter
+    annotationProcessor("org.projectlombok:lombok-mapstruct-binding:0.2.0")
+
     // --- Тесты ---
     testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
     testImplementation("org.springframework.boot:spring-boot-starter-data-jpa-test")

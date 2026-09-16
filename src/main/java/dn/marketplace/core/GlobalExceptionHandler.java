@@ -4,13 +4,18 @@ import dn.marketplace.core.exception.BusinessRuleViolationException;
 import dn.marketplace.core.exception.ResourceNotFoundException;
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.net.URI;
@@ -135,19 +140,74 @@ public class GlobalExceptionHandler {
     /**
      * Последний рубеж. Наружу — только correlation id, по которому ошибку
      * находят в логе.
+     * <p>
+     * Сначала проверяем, не объявило ли исключение свой 4xx-статус само: этот
+     * catch-all срабатывает раньше {@code ResponseStatusExceptionResolver},
+     * и без такой проверки доменный 404/409 превращался бы в 500.
+     * <p>
+     * Возвращаем {@link ResponseEntity}, а не голый {@link ProblemDetail}: для
+     * спринговых {@link ErrorResponse} нужно пробросить заголовки
+     * ({@code Allow} у 405, {@code Accept} у 415) — это часть контракта HTTP.
      */
     @ExceptionHandler(Exception.class)
-    public ProblemDetail handleUnexpected(Exception e) {
+    public ResponseEntity<ProblemDetail> handleUnexpected(Exception e) {
+        ResponseEntity<ProblemDetail> declared = declaredClientError(e);
+        if (declared != null) {
+            return declared;
+        }
+
         String correlationId = newCorrelationId();
         log.error("Необработанная ошибка [correlationId={}]", correlationId, e);
 
         ProblemDetail problem = problem(HttpStatus.INTERNAL_SERVER_ERROR, "Внутренняя ошибка",
                 "Внутренняя ошибка сервера. Сообщите correlationId в поддержку.", TYPE_INTERNAL);
         problem.setProperty("correlationId", correlationId);
-        return problem;
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
     }
 
-    private ProblemDetail problem(HttpStatus status, String title, String detail, URI type) {
+    /**
+     * Исключения, которые сами знают свой клиентский статус:
+     * <ul>
+     *   <li>доменные с {@code @ResponseStatus(4xx)} — ядро не знает их типов,
+     *       поэтому читаем аннотацию, а не перечисляем классы;</li>
+     *   <li>спринговые {@link ErrorResponse}: несовпадение типа path-переменной
+     *       ({@code /accounts/abc}), отсутствующий {@code @RequestParam},
+     *       неподдерживаемый метод, валидация параметров без {@code @Validated}.</li>
+     * </ul>
+     * Возвращает {@code null}, если исключение ничего о себе не заявляет —
+     * тогда это действительно 500.
+     */
+    private ResponseEntity<ProblemDetail> declaredClientError(Exception e) {
+        ResponseStatus declared = AnnotatedElementUtils.findMergedAnnotation(e.getClass(), ResponseStatus.class);
+        if (declared != null && declared.code().is4xxClientError()) {
+            String title = declared.reason().isEmpty() ? declared.code().getReasonPhrase() : declared.reason();
+            return ResponseEntity.status(declared.code())
+                    .body(problem(declared.code(), title, e.getMessage(), null));
+        }
+
+        if (e instanceof ErrorResponse errorResponse && errorResponse.getStatusCode().is4xxClientError()) {
+            // HttpStatusCode, а не HttpStatus.valueOf(int): последний бросает
+            // IllegalArgumentException на любом коде без константы, и тогда
+            // Spring выбрасывает весь advice — клиент получает не-RFC7807 тело.
+            HttpStatusCode status = errorResponse.getStatusCode();
+            String detail = errorResponse.getBody().getDetail();
+            ProblemDetail problem = problem(status, "Некорректный запрос",
+                    detail == null ? reasonPhrase(status) : detail,
+                    status.value() == HttpStatus.BAD_REQUEST.value() ? TYPE_VALIDATION : null);
+            return ResponseEntity.status(status)
+                    .headers(errorResponse.getHeaders())
+                    .body(problem);
+        }
+
+        return null;
+    }
+
+    private static String reasonPhrase(HttpStatusCode status) {
+        HttpStatus known = HttpStatus.resolve(status.value());
+        return known == null ? "Client Error" : known.getReasonPhrase();
+    }
+
+    private ProblemDetail problem(HttpStatusCode status, String title, String detail, URI type) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
         problem.setTitle(title);
         if (type != null) {

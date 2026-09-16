@@ -1,4 +1,10 @@
 package dn.marketplace.account.api.dto;
 
-public class AccountRequest {
+import lombok.Builder;
+
+@Builder
+public record AccountRequest(String username,
+                             String email)
+                             //TODO: password)
+                             {
 }
