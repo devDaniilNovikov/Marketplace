@@ -33,7 +33,7 @@ public class AccountServiceImpl implements AccountService {
 
     private final AccountRepository accountRepository;
     private final AccountMapper accountMapper;
-    private final RedisTemplate<String, String> redisTemplate;
+    private final RedisTemplate<String,Object> redisTemplate;
     private final JsonMapper jsonMapper;
 
 
