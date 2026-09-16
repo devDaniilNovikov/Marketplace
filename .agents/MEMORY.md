@@ -2,8 +2,8 @@
 
 ## Текущий статус
 - **Базовый пакет Java:** `dn.marketplace`
-- **Текущая фаза:** Фаза B (домен `account`). Фаза A (A0–A8) закрыта в коде.
-- **Последнее проверенное действие:** дизайн бизнес-правил D1–D10 (`docs/superpowers/specs/2026-09-16-account-business-rules-design.md`); PR `#2` ветки `feature/phase-b-account`.
+- **Текущая фаза:** Фаза B в коде закрыта (account). Дальше — B9–B11 (SPI-jar + ручной прогон) и C0 (спека Product). Фаза A (A0–A8) закрыта, `./gradlew test` зелёный.
+- **Последнее проверенное действие:** 127 тестов на Docker; USER_UPDATED по порядку; SPI после коммита Keycloak. План C–G — `.agents/PLAN.md`.
 
 ### Урок
 Этот файл ведём только по факту проверенного кода. Запись «сделано» ставится после зелёной проверки, не по намерению.
@@ -59,6 +59,8 @@ Redis Pub/Sub — fire-and-forget. Митигация — G4 (сверка че�
 - `@EnableCaching` снят до фазы I (нет `CacheManager` → контекст не стартовал).
 
 ## Next Action
-Фаза B в коде закрыта, все IT на Docker зелёные (127 тестов). Осталось собрать и скопировать SPI-jar в `docker/keycloak/providers/` и вручную проверить сценарий 2 на compose-стеке.
+1. B9: `./gradlew :keycloak-spi:jar` → `docker/keycloak/providers/`, перезапуск Keycloak.
+2. B10–B11: ручной сценарий 1 (JWT → `accounts`) и сценарий 2 (`USER_UPDATED`).
+3. C0: спека Product — до любого `02-product.sql`. Параллельно можно начинать F (поллер outbox): B уже пишет события.
 
-Дальше — Фаза C (Product).
+Не начинать D (Order), пока нет `ProductFacade.reserve`.
