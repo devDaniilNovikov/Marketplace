@@ -29,3 +29,15 @@ tasks.jar {
 tasks.test {
     useJUnitPlatform()
 }
+
+// Keycloak (Quarkus) грузит только jar-ы из providers/, зависимости не резолвит:
+// кладём jar SPI вместе с runtime classpath (jedis и его транзитивные). slf4j уже есть в дистрибутиве.
+tasks.register<Copy>("installProviders") {
+    description = "Copies SPI jar and runtime dependencies into docker/keycloak/providers/"
+    group = "build"
+    from(tasks.jar)
+    from(configurations.runtimeClasspath) {
+        exclude("slf4j-api-*.jar")
+    }
+    into(rootProject.layout.projectDirectory.dir("docker/keycloak/providers"))
+}

@@ -19,9 +19,13 @@
 Сборка:
 
 ```bash
-./gradlew :keycloak-spi:jar
-cp keycloak-spi/build/libs/marketplace-keycloak-user-events.jar docker/keycloak/providers/
+./gradlew :keycloak-spi:installProviders
 ```
+
+Задача кладёт в `docker/keycloak/providers/` jar SPI **и** его runtime-зависимости (jedis,
+commons-pool2, gson, json): Keycloak (Quarkus) не резолвит зависимости провайдеров, одного
+`:keycloak-spi:jar` недостаточно — listener падает с `NoClassDefFoundError`. Jar-ы в git не
+коммитятся (`.gitignore`), в репозитории лежит только `providers/.gitkeep`.
 
 Listener `marketplace-user-updated` и события `REGISTER`, `UPDATE_PROFILE`, `UPDATE_EMAIL` уже
 включены в `docker/keycloak/realm-export.json` — после копирования jar достаточно

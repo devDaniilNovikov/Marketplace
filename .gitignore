@@ -38,3 +38,9 @@ out/
 
 ### macOS ###
 .DS_Store
+
+### GitNexus ###
+.gitnexus/
+
+### Keycloak SPI (собирается ./gradlew :keycloak-spi:installProviders) ###
+docker/keycloak/providers/*.jar
