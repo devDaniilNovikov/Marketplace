@@ -1,0 +1,146 @@
+name: Agent · Review
+
+# Ревью выполняет Claude, но ВЕРДИКТ ПРЕВРАЩАЕТ В ДЕЙСТВИЕ детерминированный шаг.
+# Агент только пишет verdict.json; лейблы ставит workflow. Так гейт остаётся
+# проверяемым условием, а не решением модели.
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions: {}
+
+concurrency:
+  group: agent-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: >-
+      vars.AGENT_LOOP_ENABLED == 'true' &&
+      github.event.label.name == 'agent:review' &&
+      !contains(github.event.pull_request.labels.*.name, 'agent:paused')
+    runs-on: ${{ vars.AGENT_RUNS_ON || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          # Пин на конкретный SHA: иначе доработка, прилетевшая во время ревью,
+          # заставит ревьюить не тот код, который потом будет одобрен.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Claude · ревью диффа против спецификации
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app.outputs.token }}
+          # PR открыт ботом Codex, а лейбл проставлен ботом App — без этого
+          # списка действие проигнорирует запуск как «инициированный ботом».
+          allowed_bots: ${{ vars.AGENT_ALLOWED_BOTS }}
+          use_sticky_comment: true
+          additional_permissions: |
+            actions: read
+          prompt: |
+            Режим автопилота. Прочитай и выполняй .github/agents/review.md дословно;
+            он перекрывает менторскую персону из .agents/CLAUDE.md.
+            Номер PR: ${{ github.event.pull_request.number }}
+            Вердикт запиши в файл: ${{ runner.temp }}/verdict.json
+            Не меняй код, не пушь, не мержи, не трогай лейблы.
+          claude_args: >-
+            --max-turns 40
+            --allowedTools "Read,Grep,Glob,Write,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*),Bash(gh api:*),mcp__github_inline_comment__create_inline_comment"
+
+      - name: Разобрать вердикт
+        id: v
+        run: |
+          set -euo pipefail
+          F="${{ runner.temp }}/verdict.json"
+          if [ ! -s "$F" ] || ! jq -e . "$F" >/dev/null 2>&1; then
+            # Нет файла или он невалиден — это не «одобрено по умолчанию».
+            echo "verdict=rework" >> "$GITHUB_OUTPUT"
+            echo "Ревьюер не оставил разбираемого вердикта." > "${{ runner.temp }}/summary.md"
+            exit 0
+          fi
+          V=$(jq -r '.verdict // "rework"' "$F")
+          [ "$V" = "approve" ] || V=rework
+          echo "verdict=$V" >> "$GITHUB_OUTPUT"
+          {
+            jq -r '.summary // ""' "$F"
+            echo
+            jq -r 'if (.blocking // []) | length > 0 then "### Блокирующие замечания\n" + ((.blocking | map("- " + .)) | join("\n")) else "" end' "$F"
+            echo
+            jq -r 'if (.nits // []) | length > 0 then "### Необязательное\n" + ((.nits | map("- " + .)) | join("\n")) else "" end' "$F"
+          } > "${{ runner.temp }}/summary.md"
+
+      - uses: actions/create-github-app-token@v2
+        id: app2
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - name: Применить вердикт
+        env:
+          GH_TOKEN: ${{ steps.app2.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          MAX: ${{ vars.AGENT_MAX_ROUNDS }}
+        run: |
+          set -euo pipefail
+          CUR=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
+          if [ "$CUR" != "$SHA" ]; then
+            echo "PR сдвинулся во время ревью ($SHA -> $CUR): возвращаем в очередь CI"
+            gh pr edit "$PR" --remove-label agent:review --add-label agent:wip
+            exit 0
+          fi
+
+          if [ "${{ steps.v.outputs.verdict }}" = "approve" ]; then
+            # Маркер SHA — защита от гонки между одобрением и мержем.
+            BODY=$(gh pr view "$PR" --json body --jq .body \
+                   | sed '/<!-- agent-approved-sha: /d')
+            printf '%s\n\n<!-- agent-approved-sha: %s -->\n' "$BODY" "$SHA" > "${{ runner.temp }}/b.md"
+            gh pr edit "$PR" --body-file "${{ runner.temp }}/b.md"
+            gh pr edit "$PR" --remove-label agent:review --add-label agent:approved
+            exit 0
+          fi
+
+          ROUND=$(gh pr view "$PR" --json body --jq .body | sed -n 's/.*<!-- agent-round: \([0-9]*\) -->.*/\1/p')
+          NEXT=$(( ${ROUND:-0} + 1 ))
+          {
+            echo '<!-- agent-feedback -->'
+            echo "## Ревью: на доработку (раунд $NEXT)"
+            echo
+            cat "${{ runner.temp }}/summary.md"
+          } | sed -e 's/@claude/at-claude/g' -e 's/@codex/at-codex/g' > "${{ runner.temp }}/fb.md"
+          gh pr comment "$PR" --body-file "${{ runner.temp }}/fb.md"
+
+          if [ "$NEXT" -gt "${MAX:-3}" ]; then
+            gh pr edit "$PR" --remove-label agent:review --add-label agent:needs-human
+            gh pr ready --undo "$PR" || true
+            gh pr comment "$PR" --body "Лимит раундов (${MAX:-3}) исчерпан. Работа передана человеку."
+            exit 0
+          fi
+
+          BODY=$(gh pr view "$PR" --json body --jq .body \
+                 | sed "s/<!-- agent-round: [0-9]* -->/<!-- agent-round: $NEXT -->/")
+          gh pr edit "$PR" --body "$BODY"
+          gh pr edit "$PR" --remove-label agent:review --add-label agent:rework
+
+      - name: При отказе — отдать человеку
+        if: failure()
+        env:
+          GH_TOKEN: ${{ steps.app2.outputs.token || steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR" --remove-label agent:review --add-label agent:needs-human || true
+          gh pr comment "$PR" --body "Ревью не завершилось: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
