@@ -38,7 +38,7 @@ and only on this point. Everything else below applies in both modes.
 - `docker compose up -d` — start infrastructure (Postgres, Redis, Keycloak, MinIO, Prometheus, Grafana).
 - `./gradlew bootRun` — run the Spring Boot application (port 3000).
 - `./gradlew compileJava compileTestJava` — compile.
-- `./gradlew test -PfastTests` — tests that do not need Docker. This is the cheap gate.
+- `./gradlew test -PfastTests=true` — tests that do not need Docker. This is the cheap gate.
 - `./gradlew test` — all JUnit tests; the `it`-tagged ones start Testcontainers and need Docker.
 - `./gradlew check` — full verification. **Run this before opening or updating a PR.**
 

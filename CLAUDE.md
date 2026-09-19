@@ -26,5 +26,5 @@ Claude Code загружает автоматически только корн�
 
 ## Проверка перед PR
 
-    ./gradlew test -PfastTests   # без Docker
+    ./gradlew test -PfastTests=true   # без Docker
     ./gradlew check              # полный прогон, нужен Docker

@@ -49,7 +49,7 @@ jobs:
         run: ./gradlew compileJava compileTestJava --stacktrace
 
       - name: Тесты без Docker
-        run: ./gradlew test -PfastTests --stacktrace
+        run: ./gradlew test -PfastTests=true --stacktrace
 
       - name: Отчёты быстрого прогона
         if: always()

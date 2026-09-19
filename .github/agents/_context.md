@@ -9,7 +9,7 @@ Java 25, Spring Boot 4.1, Gradle Wrapper (Kotlin DSL), один модуль.
 Postgres + Liquibase, Redis, Keycloak (SSOT для identity), MinIO, Stripe.
 
     ./gradlew compileJava compileTestJava
-    ./gradlew test -PfastTests    # без Docker
+    ./gradlew test -PfastTests=true    # без Docker
     ./gradlew check               # полный прогон, нужен Docker
 
 Модуля `keycloak-spi` **не существует**. Каталога `.planning/` не существует.
