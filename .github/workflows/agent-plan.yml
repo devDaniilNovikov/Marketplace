@@ -21,7 +21,7 @@ jobs:
       vars.AGENT_LOOP_ENABLED == 'true' &&
       github.event.label.name == 'agent:plan' &&
       !contains(github.event.issue.labels.*.name, 'agent:paused')
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AGENT_RUNS_ON || 'ubuntu-latest' }}
     timeout-minutes: 25
     permissions:
       contents: read

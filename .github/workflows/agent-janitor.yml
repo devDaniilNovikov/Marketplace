@@ -19,7 +19,7 @@ permissions: {}
 jobs:
   sweep:
     if: vars.AGENT_LOOP_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AGENT_RUNS_ON || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions: {}
     steps:

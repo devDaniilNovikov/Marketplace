@@ -20,7 +20,7 @@ jobs:
     if: >-
       vars.AGENT_LOOP_ENABLED == 'true' &&
       github.event.workflow_run.event == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AGENT_RUNS_ON || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       actions: read

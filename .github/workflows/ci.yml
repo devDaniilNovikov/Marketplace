@@ -22,10 +22,14 @@ concurrency:
 permissions:
   contents: read
 
+# Переезд всего цикла на свою машину — это одна переменная репозитория,
+# а не правка восьми файлов: AGENT_RUNS_ON = self-hosted.
+# Не задана — работаем на раннерах GitHub.
+
 jobs:
   fast:
     name: fast
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AGENT_RUNS_ON || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +66,7 @@ jobs:
     # Полный прогон с Testcontainers стоит ~8-10 минут. Если код даже не
     # компилируется, платить за него незачем — типовой отказ агентского раунда.
     needs: fast
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AGENT_RUNS_ON || 'ubuntu-latest' }}
     timeout-minutes: 40
     env:
       # Раннер одноразовый: Ryuk только тратит контейнер и добавляет флейки.
