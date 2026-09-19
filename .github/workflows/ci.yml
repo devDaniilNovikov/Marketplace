@@ -1,0 +1,114 @@
+name: CI
+
+# Единственный детерминированный гейт перед main. Имена джобов `fast` и `full`
+# используются в branch protection и в гардах merge-джоба агентского цикла —
+# при переименовании поправить .github/workflows/agent-merge.yml и agent-gate.yml.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# НЕ использовать pull_request_target: ветки агентов лежат в этом же репозитории,
+# поэтому pull_request и так даёт полный доступ к токену, а pull_request_target
+# выполнил бы код из PR с правами на запись.
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fast:
+    name: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Обязательно: в settings.gradle.kts нет foojay-resolver, поэтому Gradle
+      # не умеет сам скачать тулчейн JDK 25 — его должен поставить раннер.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Компиляция
+        run: ./gradlew compileJava compileTestJava --stacktrace
+
+      - name: Тесты без Docker
+        run: ./gradlew test -PfastTests --stacktrace
+
+      - name: Отчёты быстрого прогона
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/reports/tests/
+            build/test-results/
+          retention-days: 7
+
+  full:
+    name: full
+    # Полный прогон с Testcontainers стоит ~8-10 минут. Если код даже не
+    # компилируется, платить за него незачем — типовой отказ агентского раунда.
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # Раннер одноразовый: Ryuk только тратит контейнер и добавляет флейки.
+      TESTCONTAINERS_RYUK_DISABLED: 'true'
+      GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Прогрев образов Testcontainers
+        run: |
+          docker pull postgres:17-alpine &
+          docker pull redis:7-alpine &
+          wait
+
+      - name: ./gradlew check
+        # `check` сегодня равен `test`: Spotless/Checkstyle/PMD в проекте не настроены.
+        run: ./gradlew check --stacktrace
+
+      - name: Отчёты полного прогона
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/reports/tests/
+            build/test-results/
+          retention-days: 7
+
+      # archunit_store не закоммичен, поэтому FreezingArchRule создаёт его заново
+      # каждый прогон и молча замораживает в том числе НОВЫЕ нарушения.
+      # Артефакт нужен ровно один раз: скачать, закоммитить, затем включить
+      # строгий режим (см. docs/agent-loop.md, раздел «ArchUnit»).
+      - name: Выгрузить сгенерированный archunit_store
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: archunit-store-${{ github.run_id }}
+          path: src/test/resources/archunit_store/
+          if-no-files-found: ignore
+          retention-days: 14

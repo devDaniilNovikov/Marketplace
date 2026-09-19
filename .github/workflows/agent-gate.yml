@@ -1,0 +1,107 @@
+name: Agent · Gate
+
+# Маршрутизатор результата CI. Именно он делает цикл событийным: никто нигде
+# не ждёт CI в цикле опроса — результат приходит событием workflow_run.
+#
+# Две ловушки, из-за которых этот файл обычно не работает:
+#  1. workflow_run запускается ВСЕГДА из копии файла на ветке по умолчанию.
+#     Пока этот файл не в main, он не сработает, сколько бы CI ни падал.
+#  2. Значение в `workflows:` должно совпадать с полем `name:` в ci.yml дословно.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  route:
+    if: >-
+      vars.AGENT_LOOP_ENABLED == 'true' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - name: Найти PR по SHA и прочитать состояние
+        id: ctx
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          # workflow_run.pull_requests часто пустой — ищем по коммиту.
+          PR=$(gh api "repos/${{ github.repository }}/commits/$SHA/pulls" --jq '.[0].number // empty')
+          if [ -z "$PR" ]; then echo "для $SHA нет PR"; echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0; fi
+
+          J=$(gh pr view "$PR" --json body,labels,headRefOid)
+          HEAD=$(printf '%s' "$J" | jq -r .headRefOid)
+          LABELS=$(printf '%s' "$J" | jq -r '[.labels[].name] | join(",")')
+          ROUND=$(printf '%s' "$J" | jq -r .body | sed -n 's/.*<!-- agent-round: \([0-9]*\) -->.*/\1/p')
+
+          SKIP=0
+          # Результат устаревшего прогона: с тех пор в ветку уже запушили.
+          [ "$HEAD" = "$SHA" ] || { echo "устаревший прогон: $SHA != $HEAD"; SKIP=1; }
+          case ",$LABELS," in
+            *,agent:paused,*|*,agent:needs-human,*) echo "PR на паузе или у человека"; SKIP=1 ;;
+          esac
+          case ",$LABELS," in
+            *,agent:wip,*) ;;
+            *) echo "PR не в состоянии agent:wip"; SKIP=1 ;;
+          esac
+
+          { echo "skip=$SKIP"; echo "pr=$PR"; echo "round=${ROUND:-0}"; } >> "$GITHUB_OUTPUT"
+
+      - name: CI зелёный — передать на ревью
+        if: steps.ctx.outputs.skip == '0' && github.event.workflow_run.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ steps.ctx.outputs.pr }}
+        run: gh pr edit "$PR" --remove-label agent:wip --add-label agent:review
+
+      - name: CI красный — на доработку или стоп
+        if: steps.ctx.outputs.skip == '0' && github.event.workflow_run.conclusion != 'success'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ steps.ctx.outputs.pr }}
+          ROUND: ${{ steps.ctx.outputs.round }}
+          MAX: ${{ vars.AGENT_MAX_ROUNDS }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          NEXT=$((ROUND + 1))
+
+          gh run view "$RUN_ID" --log-failed > "${{ runner.temp }}/ci.log" 2>/dev/null || true
+          # Срезаем хвост: тело комментария ограничено 65536 символами.
+          tail -c 30000 "${{ runner.temp }}/ci.log" > "${{ runner.temp }}/ci-tail.log" || true
+          {
+            echo '<!-- agent-feedback -->'
+            echo "## CI упал (раунд $NEXT)"
+            echo "Прогон: ${{ github.event.workflow_run.html_url }}"
+            echo
+            echo '```'
+            cat "${{ runner.temp }}/ci-tail.log" 2>/dev/null || echo "лог недоступен"
+            echo '```'
+          } | sed -e 's/@claude/at-claude/g' -e 's/@codex/at-codex/g' > "${{ runner.temp }}/fb.md"
+          gh pr comment "$PR" --body-file "${{ runner.temp }}/fb.md"
+
+          if [ "$NEXT" -gt "${MAX:-3}" ]; then
+            gh pr edit "$PR" --remove-label agent:wip --add-label agent:needs-human
+            # Черновик нельзя смержить, даже если кто-то вернёт agent:approved руками.
+            gh pr ready --undo "$PR" || true
+            gh pr comment "$PR" --body "Лимит раундов (${MAX:-3}) исчерпан. Работа остановлена и передана человеку; ветка и PR сохранены."
+            exit 0
+          fi
+
+          BODY=$(gh pr view "$PR" --json body --jq .body \
+                 | sed "s/<!-- agent-round: [0-9]* -->/<!-- agent-round: $NEXT -->/")
+          gh pr edit "$PR" --body "$BODY"
+          gh pr edit "$PR" --remove-label agent:wip --add-label agent:rework

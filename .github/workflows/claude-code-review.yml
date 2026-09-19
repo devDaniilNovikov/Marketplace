@@ -12,11 +12,13 @@ on:
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    # Агентские PR ревьюит agent-review.yml по спецификации задачи и с машинным
+    # вердиктом. Два ревьюера на одном диффе — это противоречащие друг другу
+    # инлайн-замечания и двойной расход лимитов, поэтому здесь они отсекаются.
+    # Проверка идёт по автору PR: на событии `opened` лейблов ещё нет.
+    if: >-
+      github.event.pull_request.user.login != vars.AGENT_CODEX_LOGIN &&
+      github.event.pull_request.user.login != vars.AGENT_BOT_LOGIN
 
     runs-on: ubuntu-latest
     permissions:

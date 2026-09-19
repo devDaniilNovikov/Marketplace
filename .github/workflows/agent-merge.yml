@@ -1,0 +1,170 @@
+name: Agent · Merge
+
+# Мержит НЕ агент, а этот джоб. Так решено не из перестраховки: claude-code-action
+# по документации не умеет мержить (ограничение зашито в его системный промпт),
+# и в итоге это правильнее — гейт становится проверяемым условием, а не решением модели.
+#
+# Любой сработавший гард — это передача человеку (agent:needs-human), а не повтор.
+
+on:
+  pull_request:
+    types: [labeled]
+  # Одобрить могли раньше, чем дозеленел CI, — тогда добираем по событию CI.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  # Репозиторный, а не по PR: последовательные мержи в main вместо гонки.
+  group: agent-merge-main
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: >-
+      vars.AGENT_LOOP_ENABLED == 'true' &&
+      (
+        (github.event_name == 'pull_request' && github.event.label.name == 'agent:approved') ||
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.event == 'pull_request' &&
+         github.event.workflow_run.conclusion == 'success')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # actions/checkout ходит под GITHUB_TOKEN: без contents: read
+      # на приватном репозитории чекаут падает с 403.
+      contents: read
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - name: Определить PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            N=${{ github.event.pull_request.number }}
+          else
+            N=$(gh api "repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/pulls" --jq '.[0].number // empty')
+          fi
+          if [ -z "${N:-}" ]; then echo "PR не определён"; echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0; fi
+          STATE=$(gh pr view "$N" --json state --jq .state)
+          LABELS=$(gh pr view "$N" --json labels --jq '[.labels[].name] | join(",")')
+          SKIP=0
+          [ "$STATE" = "OPEN" ] || { echo "PR #$N уже $STATE"; SKIP=1; }
+          case ",$LABELS," in
+            *,agent:approved,*) ;;
+            *) echo "PR #$N не одобрен"; SKIP=1 ;;
+          esac
+          case ",$LABELS," in
+            *,agent:needs-human,*|*,agent:paused,*) echo "PR #$N у человека или на паузе"; SKIP=1 ;;
+          esac
+          { echo "skip=$SKIP"; echo "number=$N"; } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.pr.outputs.skip == '0'
+        with:
+          fetch-depth: 0
+
+      - name: Гарды
+        id: guards
+        if: steps.pr.outputs.skip == '0'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          MAX_FILES: ${{ vars.AGENT_MAX_FILES }}
+          MAX_LINES: ${{ vars.AGENT_MAX_LINES }}
+          BOT: ${{ vars.AGENT_BOT_LOGIN }}
+          SENSITIVE: ${{ vars.AGENT_SENSITIVE_PATHS }}
+        run: |
+          set -euo pipefail
+          J=$(gh pr view "$PR" --json headRefOid,baseRefName,body,isDraft,mergeable,files)
+          HEAD=$(printf '%s' "$J" | jq -r .headRefOid)
+          APPROVED=$(printf '%s' "$J" | jq -r .body | sed -n 's/.*<!-- agent-approved-sha: \([0-9a-f]*\) -->.*/\1/p')
+
+          # 1. Одобряли именно этот коммит. Защита от гонки «одобрено → запушили → смержено».
+          [ -n "$APPROVED" ] || { echo "нет маркера agent-approved-sha"; exit 1; }
+          [ "$HEAD" = "$APPROVED" ] || { echo "PR сдвинулся после одобрения ($APPROVED -> $HEAD)"; exit 1; }
+
+          # 2. База и состояние PR.
+          [ "$(printf '%s' "$J" | jq -r .baseRefName)" = "main" ] || { echo "база не main"; exit 1; }
+          [ "$(printf '%s' "$J" | jq -r .isDraft)" = "false" ] || { echo "PR черновик"; exit 1; }
+          [ "$(printf '%s' "$J" | jq -r .mergeable)" != "CONFLICTING" ] || { echo "конфликт с базой"; exit 1; }
+
+          # 3. Лейбл agent:approved поставил бот цикла, а не человек руками.
+          ACTOR=$(gh api "repos/${{ github.repository }}/issues/$PR/timeline" --paginate \
+                  --jq '[.[] | select(.event=="labeled" and .label.name=="agent:approved") | .actor.login] | last // ""')
+          if [ -n "${BOT:-}" ] && [ "$ACTOR" != "$BOT" ]; then
+            echo "agent:approved поставил $ACTOR, а не $BOT"; exit 1
+          fi
+
+          # 4. Полный прогон CI зелёный ИМЕННО на этом SHA.
+          CONCL=$(gh api "repos/${{ github.repository }}/commits/$HEAD/check-runs" \
+                  --jq '[.check_runs[] | select(.name=="full") | .conclusion] | last // "missing"')
+          [ "$CONCL" = "success" ] || { echo "джоб full на $HEAD: $CONCL"; exit 1; }
+
+          # 5. Бюджет диффа.
+          F=$(printf '%s' "$J" | jq '.files | length')
+          L=$(printf '%s' "$J" | jq '[.files[] | .additions + .deletions] | add // 0')
+          [ "$F" -le "${MAX_FILES:-15}" ] || { echo "файлов $F > ${MAX_FILES:-15}"; exit 1; }
+          [ "$L" -le "${MAX_LINES:-400}" ] || { echo "строк $L > ${MAX_LINES:-400}"; exit 1; }
+
+          # 6. Запрещённые пути. По-хорошему сюда не дойдёт: у App нет права
+          # `workflows`, и GitHub сам отклонит push, трогающий .github/workflows.
+          git fetch --no-tags origin main --depth=50
+          D=$(git diff --name-status "origin/main...$HEAD")
+          if printf '%s\n' "$D" | awk '{print $2}' | grep -qE '^(\.github/|gradle/wrapper/|AGENTS\.md|CLAUDE\.md|\.agents/(CLAUDE|MEMORY|SCENARIOS|TASKS)\.md)'; then
+            echo "затронуты запрещённые пути"; exit 1
+          fi
+
+          # 7. Миграции только добавляются.
+          if printf '%s\n' "$D" | grep -E '^[MDR]' | grep -q 'src/main/resources/db/changelog/'; then
+            echo "изменён или удалён применённый changeset"; exit 1
+          fi
+
+          # 8. Чувствительные пути мержит человек. Это не отказ, а передача.
+          PAT=${SENSITIVE:-'^(src/main/java/dn/marketplace/core/security/|src/main/resources/db/changelog/|build\.gradle\.kts|settings\.gradle\.kts)'}
+          if printf '%s\n' "$D" | awk '{print $2}' | grep -qE "$PAT"; then
+            echo "handoff=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "handoff=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Чувствительные пути — отдать человеку
+        if: steps.pr.outputs.skip == '0' && steps.guards.outputs.handoff == '1'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr edit "$PR" --add-label agent:needs-human
+          gh pr comment "$PR" --body "Все гарды пройдены и CI зелёный, но дифф затрагивает чувствительные пути (безопасность, миграции или сборка). Авто-мерж для них выключен намеренно — смержите вручную."
+
+      - name: Squash-мерж
+        if: steps.pr.outputs.skip == '0' && steps.guards.outputs.handoff == '0'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          T=$(gh pr view "$PR" --json title --jq .title)
+          gh pr merge "$PR" --squash --delete-branch \
+            --subject "$T (#$PR)" \
+            --body "Co-Authored-By: Codex <noreply@openai.com>"
+          # Строка `Closes #N` в теле PR закроет задачу сама.
+
+      - name: При отказе гарда — отдать человеку
+        if: failure() && steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr edit "$PR" --remove-label agent:approved --add-label agent:needs-human || true
+          gh pr comment "$PR" --body "Мерж остановлен гардом: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

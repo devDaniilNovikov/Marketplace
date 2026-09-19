@@ -1,0 +1,189 @@
+name: Agent · Dispatch to Codex
+
+# Единственное место, где управление переходит к Codex.
+#
+# ВАЖНО ПРО ТОКЕН: комментарий @codex постится ЛИЧНЫМ ТОКЕНОМ владельца
+# (secrets.AGENT_CODEX_PAT), а не токеном App. Интеграция Codex Cloud привязывает
+# задачу к аккаунту ChatGPT автора упоминания и отклоняет ботов. Это единственный
+# workflow, которому нужен PAT — везде остальное работает на GitHub App.
+
+on:
+  issues:
+    types: [labeled]
+  pull_request:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  first-round:
+    concurrency:
+      group: agent-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    if: >-
+      vars.AGENT_LOOP_ENABLED == 'true' &&
+      github.event_name == 'issues' &&
+      github.event.label.name == 'agent:ready' &&
+      !contains(github.event.issue.labels.*.name, 'agent:paused')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # actions/checkout ходит под GITHUB_TOKEN: без contents: read
+      # на приватном репозитории чекаут падает с 403.
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - name: Собрать задание из шаблона и спеки
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          N: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          gh issue view "$N" --json body --jq .body \
+            | sed -n '/<!-- agent-spec -->/,$p' > "${{ runner.temp }}/spec.md"
+          test -s "${{ runner.temp }}/spec.md" || { echo "в теле issue нет спеки"; exit 1; }
+
+          # Шаблон ниже разделителя --- , плейсхолдеры подставляем sed'ом.
+          sed -n '/^---$/,$p' .github/agents/codex-task.md | tail -n +2 \
+            | sed -e "s/{{ISSUE}}/$N/g" > "${{ runner.temp }}/task.md"
+
+          {
+            cat "${{ runner.temp }}/task.md"
+            printf '\n\n<details><summary>Спецификация задачи</summary>\n\n'
+            cat "${{ runner.temp }}/spec.md"
+            printf '\n</details>\n'
+          } > "${{ runner.temp }}/comment.md"
+
+      - name: Разбудить Codex комментарием от имени владельца
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_CODEX_PAT }}
+          N: ${{ github.event.issue.number }}
+        run: gh issue comment "$N" --body-file "${{ runner.temp }}/comment.md"
+
+      - name: Отметить issue как отданную в работу
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          N: ${{ github.event.issue.number }}
+        run: gh issue edit "$N" --remove-label agent:ready --add-label agent:implementing
+
+      - name: При отказе — отдать человеку
+        if: failure()
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          N: ${{ github.event.issue.number }}
+        run: |
+          gh issue edit "$N" --remove-label agent:ready --add-label agent:needs-human || true
+          gh issue comment "$N" --body "Передача задачи Codex не удалась: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  rework-round:
+    concurrency:
+      group: agent-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    if: >-
+      vars.AGENT_LOOP_ENABLED == 'true' &&
+      github.event_name == 'pull_request' &&
+      github.event.label.name == 'agent:rework' &&
+      !contains(github.event.pull_request.labels.*.name, 'agent:paused')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # actions/checkout ходит под GITHUB_TOKEN: без contents: read
+      # на приватном репозитории чекаут падает с 403.
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - name: Прочитать состояние и перепроверить лимит раундов
+        id: ctx
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          MAX: ${{ vars.AGENT_MAX_ROUNDS }}
+        run: |
+          set -euo pipefail
+          BODY=$(gh pr view "$PR" --json body --jq .body)
+          ISSUE=$(printf '%s' "$BODY" | sed -n 's/.*<!-- agent-issue: \([0-9]*\) -->.*/\1/p')
+          ROUND=$(printf '%s' "$BODY" | sed -n 's/.*<!-- agent-round: \([0-9]*\) -->.*/\1/p')
+          BRANCH=$(gh pr view "$PR" --json headRefName --jq .headRefName)
+          : "${ISSUE:?в теле PR нет маркера agent-issue}"
+          ROUND=${ROUND:-1}
+          if [ "$ROUND" -gt "${MAX:-3}" ]; then
+            echo "лимит раундов исчерпан ($ROUND > ${MAX:-3})"
+            exit 1
+          fi
+          { echo "issue=$ISSUE"; echo "round=$ROUND"; echo "branch=$BRANCH"; } >> "$GITHUB_OUTPUT"
+
+      - name: Собрать замечания этого раунда
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Последний блок обратной связи, оставленный гейтом или ревьюером.
+          gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+            --jq '[.[] | select(.body | contains("<!-- agent-feedback -->")) | .body] | last // ""' \
+            > "${{ runner.temp }}/feedback.md"
+          # Плюс точечные инлайн-замечания к строкам.
+          gh api "repos/${{ github.repository }}/pulls/$PR/comments" --paginate \
+            --jq '.[] | "- `\(.path):\(.line // .original_line)` — \(.body)"' \
+            >> "${{ runner.temp }}/feedback.md" || true
+          test -s "${{ runner.temp }}/feedback.md" || echo "_Замечаний не найдено; смотри последний прогон CI._" > "${{ runner.temp }}/feedback.md"
+
+      - name: Собрать задание на доработку
+        env:
+          ISSUE: ${{ steps.ctx.outputs.issue }}
+          ROUND: ${{ steps.ctx.outputs.round }}
+          BRANCH: ${{ steps.ctx.outputs.branch }}
+          PR: ${{ github.event.pull_request.number }}
+          MAX: ${{ vars.AGENT_MAX_ROUNDS }}
+        run: |
+          set -euo pipefail
+          sed -n '/^---$/,$p' .github/agents/codex-rework.md | tail -n +2 \
+            | sed -e "s/{{ISSUE}}/$ISSUE/g" -e "s/{{PR}}/$PR/g" \
+                  -e "s/{{ROUND}}/$ROUND/g" -e "s/{{MAX_ROUNDS}}/${MAX:-3}/g" \
+                  -e "s#{{BRANCH}}#$BRANCH#g" \
+                  -e "s/{{REASON}}/см. блок замечаний ниже/g" \
+            > "${{ runner.temp }}/task.md"
+          # {{FEEDBACK}} подставляем отдельно: тело многострочное, sed для него не годится.
+          python3 - <<'PY'
+          import os, pathlib
+          tmp = pathlib.Path(os.environ["RUNNER_TEMP"])
+          task = (tmp / "task.md").read_text(encoding="utf-8")
+          fb = (tmp / "feedback.md").read_text(encoding="utf-8")
+          (tmp / "comment.md").write_text(task.replace("{{FEEDBACK}}", fb), encoding="utf-8")
+          PY
+
+      - name: Разбудить Codex комментарием от имени владельца
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_CODEX_PAT }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR" --body-file "${{ runner.temp }}/comment.md"
+
+      - name: Вернуть PR в состояние ожидания CI
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr edit "$PR" --remove-label agent:rework --add-label agent:wip
+
+      - name: При отказе — отдать человеку
+        if: failure()
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR" --remove-label agent:rework --add-label agent:needs-human || true
+          gh pr ready --undo "$PR" || true
+          gh pr comment "$PR" --body "Доработка не отправлена (лимит раундов или ошибка): ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

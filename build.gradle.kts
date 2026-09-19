@@ -94,5 +94,18 @@ dependencyManagement {
 }
 
 tasks.withType<Test> {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        // -PfastTests — прогон без Docker: дешёвый гейт для раундов агентского цикла.
+        // Тег "it" наследуется от AbstractIntegrationTest, поэтому разделение не зависит
+        // от того, назвали класс *Test или *IT, и не разъедется при следующем переименовании.
+        if (providers.gradleProperty("fastTests").isPresent) {
+            excludeTags("it")
+        }
+    }
+
+    // archunit.properties читает форкнутая JVM тестов, а -D на JVM Gradle туда не долетает.
+    // Без этого проброса переключить FreezingArchRule снаружи (из CI) невозможно.
+    providers.gradleProperty("archunitAllowStoreCreation").orNull?.let {
+        systemProperty("freeze.store.default.allowStoreCreation", it)
+    }
 }

@@ -1,6 +1,7 @@
 package dn.marketplace.db;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
@@ -26,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * JPA сюда намеренно не подключён — этот тест про миграции, и он должен
  * оставаться зелёным независимо от состояния сущностей.
  */
+@Tag("it")
 @SpringBootTest(
         classes = LiquibaseMigrationTest.MigrationOnlyApplication.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE)
