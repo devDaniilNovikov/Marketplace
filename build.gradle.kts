@@ -108,4 +108,18 @@ tasks.withType<Test> {
     providers.gradleProperty("archunitAllowStoreCreation").orNull?.let {
         systemProperty("freeze.store.default.allowStoreCreation", it)
     }
+
+    // По умолчанию Gradle печатает только класс исключения и строку — без сообщения.
+    // Для агентского цикла это блокер: agent-gate.yml отдаёт хвост лога CI исполнителю
+    // как задание на доработку, и по строке вида "SomeException at ArrayList.java:1604"
+    // починить нельзя — раунд сгорит вслепую.
+    testLogging {
+        events("failed", "skipped")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showStackTraces = true
+        showCauses = true
+        // Срезает внутренние кадры Gradle и JUnit: иначе сообщение тонет в сотне строк,
+        // а у комментария в PR лимит 65536 символов.
+        stackTraceFilters(org.gradle.api.tasks.testing.logging.TestStackTraceFilter.ENTRY_POINT)
+    }
 }

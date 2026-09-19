@@ -46,7 +46,7 @@ gh pr create --base main --head claude/epic-planck-mzkub2 \
 
 | Симптом | Действие |
 | --- | --- |
-| `temurin-25 not found` в `setup-java` | заменить `distribution: temurin` на `zulu` или `oracle` в `ci.yml` |
+| `temurin-25 not found` в `setup-java` | не наблюдалось: прогон №1 поднял `Temurin 25.0.4`. Если всё же — `zulu` или `oracle` в `ci.yml` |
 | Падают тесты `*IT` | чинить тесты; это реальные дефекты, а не инфраструктура |
 | Rate limit при `docker pull` | добавить логин в Docker Hub или зеркалить образы |
 | `fast` зелёный, `full` красный | ровно та причина, ради которой они разделены — смотри отчёт в артефактах |
@@ -83,10 +83,18 @@ gh pr checks 4 --watch
 в том числе новые нарушения.
 
 ```bash
-# Скачать стор, сгенерированный джобом full на этапе 1 (локальный JDK 25 не нужен):
+# Джоб full выгружает стор артефактом (локальный JDK 25 не нужен):
 gh run download <run-id> -n archunit-store-<run-id> -D src/test/resources/archunit_store
 git add src/test/resources/archunit_store
 ```
+
+**Артефакта может не быть, и это нормально.** Он выгружается с
+`if-no-files-found: ignore`: пусто означает, что текущий код не нарушает ни одного
+замороженного правила и хранить нечего. Тогда шаг скачивания пропускается.
+
+В прогоне №1 артефакт был пуст по другой причине — ArchUnit клал стор в корень
+проекта, а не в ресурсы. Это исправлено строкой `freeze.store.default.path`
+в `archunit.properties`, но проверить стоит на первом же зелёном прогоне.
 
 Затем в `src/test/resources/archunit.properties` поставить:
 
