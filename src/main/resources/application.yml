@@ -81,8 +81,13 @@ logging:
   level:
     liquibase: INFO
 
-# Настройки монолита
 marketplace:
+  account:
+    seller-application:
+      hold: PT3M
   keycloak:
     # Канал Redis Pub/Sub, куда Keycloak SPI публикует USER_UPDATED (сценарий 2)
     events-channel: ${KEYCLOAK_EVENTS_CHANNEL:keycloak.events.user}
+    # Общий секрет SPI ↔ listener. Не identity Redis: requirepass не заменяет HMAC.
+    events-mac-secret: ${KEYCLOAK_EVENTS_MAC_SECRET:marketplace-dev-events-mac}
+    events-mac-skew: ${KEYCLOAK_EVENTS_MAC_SKEW:30s}

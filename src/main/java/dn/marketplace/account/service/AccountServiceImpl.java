@@ -1,151 +1,146 @@
 package dn.marketplace.account.service;
 
-
-import dn.marketplace.account.api.AccountEntity;
+import dn.marketplace.account.AccountOutboxEvents;
 import dn.marketplace.account.api.dto.AccountListResponse;
-import dn.marketplace.account.api.dto.AccountMapResponse;
-import dn.marketplace.account.api.dto.AccountRequest;
+import dn.marketplace.account.api.dto.AccountProfileResponse;
 import dn.marketplace.account.api.dto.AccountResponse;
-import dn.marketplace.account.api.enums.AccountStatus;
-import dn.marketplace.account.api.exception.AccountNotFoundException;
-import dn.marketplace.account.api.repository.AccountRepository;
+import dn.marketplace.account.api.enums.BusinessStatus;
 import dn.marketplace.account.api.mapper.AccountMapper;
+import dn.marketplace.account.config.AccountSellerApplicationProperties;
+import dn.marketplace.account.entity.AccountEntity;
+import dn.marketplace.account.repository.AccountRepository;
+import dn.marketplace.core.exception.ResourceNotFoundException;
+import dn.marketplace.core.outbox.OutboxPublisher;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.databind.json.JsonMapper;
 
-
-import java.text.MessageFormat;
-import java.util.*;
-import java.util.stream.Collectors;
-
+import java.time.Clock;
+import java.time.Instant;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
-@Slf4j
+@Transactional(readOnly = true)
 public class AccountServiceImpl implements AccountService {
-
 
     private final AccountRepository accountRepository;
     private final AccountMapper accountMapper;
-    private final RedisTemplate<String,Object> redisTemplate;
-    private final JsonMapper jsonMapper;
-
-
+    private final OutboxPublisher outboxPublisher;
+    private final Clock clock;
+    private final AccountSellerApplicationProperties sellerApplicationProperties;
 
     @Override
-    public AccountListResponse findAll(int pageNumber, int pageSize) {
-        PageRequest pageRequest = PageRequest.of(pageNumber, pageSize);
-        Page<AccountResponse> page = accountRepository.findAll(pageRequest)
-                .map(accountMapper::toResponse);
-        return AccountListResponse.builder()
-                .pageSize(pageSize)
-                .pageNumber(pageNumber)
-                .accounts(page.getContent())
-                .build();
+    public AccountListResponse findAllByStatus(BusinessStatus status, int pageNumber, int pageSize) {
+        return toList(accountRepository.findAllByBusinessStatusAndDeletedAtIsNull(
+                status, PageRequest.of(pageNumber, pageSize)));
     }
 
     @Override
-    public AccountMapResponse findAllByStatus(AccountStatus status,
-                                              int pageNumber,
-                                              int pageSize) {
-        Map<String,List<AccountResponse>> result = new TreeMap<>();
-        var pageable = PageRequest.of(pageNumber, pageSize);
-        Page<AccountResponse> page = accountRepository.findAllByStatus(status,pageable)
-                .map(accountMapper::toResponse);
-        result.put(status.name(), page.getContent());
-        return AccountMapResponse.builder()
-                .accounts(result)
+    public AccountResponse findById(UUID accountId) {
+        return accountMapper.toResponse(get(accountId));
+    }
+
+    @Override
+    public AccountProfileResponse findMe(UUID accountId) {
+        return accountMapper.toProfile(get(accountId));
+    }
+
+    @Override
+    public AccountResponse findByUsername(String username) {
+        return accountRepository.findByUsernameAndDeletedAtIsNull(username)
+                .map(accountMapper::toResponse)
+                .orElseThrow(() -> ResourceNotFoundException.of("Аккаунт", username));
+    }
+
+    @Override
+    @Transactional
+    public AccountResponse applyAsSeller(UUID accountId) {
+        AccountEntity account = getActive(accountId);
+        account.applyAsSeller(Instant.now(clock), sellerApplicationProperties.hold());
+        return accountMapper.toResponse(account);
+    }
+
+    @Override
+    @Transactional
+    public AccountResponse approveSeller(UUID accountId) {
+        AccountEntity account = getActive(accountId);
+        account.approveSeller();
+        publish(accountId, AccountOutboxEvents.SELLER_ROLE_GRANTED);
+        return accountMapper.toResponse(account);
+    }
+
+    @Override
+    @Transactional
+    public AccountResponse rejectSeller(UUID accountId, String reason) {
+        AccountEntity account = getActive(accountId);
+        account.rejectSeller(reason);
+        return accountMapper.toResponse(account);
+    }
+
+    @Override
+    @Transactional
+    public AccountResponse revokeSeller(UUID accountId) {
+        AccountEntity account = getActive(accountId);
+        account.revokeSeller();
+        publish(accountId, AccountOutboxEvents.SELLER_ROLE_REVOKED);
+        return accountMapper.toResponse(account);
+    }
+
+    @Override
+    @Transactional
+    public AccountResponse ban(UUID accountId) {
+        AccountEntity account = getActive(accountId);
+        account.ban();
+        publish(accountId, AccountOutboxEvents.ACCOUNT_DISABLED);
+        return accountMapper.toResponse(account);
+    }
+
+    @Override
+    @Transactional
+    public AccountResponse unban(UUID accountId) {
+        AccountEntity account = getActive(accountId);
+        account.unban();
+        publish(accountId, AccountOutboxEvents.ACCOUNT_ENABLED);
+        return accountMapper.toResponse(account);
+    }
+
+    @Override
+    @Transactional
+    public void delete(UUID accountId) {
+        AccountEntity account = getActive(accountId);
+        account.delete(Instant.now(clock));
+        publish(accountId, AccountOutboxEvents.ACCOUNT_DELETED);
+    }
+
+    private AccountListResponse toList(Page<AccountEntity> page) {
+        return AccountListResponse.builder()
                 .pageNumber(page.getNumber())
                 .pageSize(page.getSize())
                 .totalElements(page.getTotalElements())
                 .totalPages(page.getTotalPages())
                 .hasNext(page.hasNext())
+                .accounts(page.getContent().stream().map(accountMapper::toResponse).toList())
                 .build();
     }
 
-    @Override
-    public AccountResponse findById(UUID accountId) {
+    private AccountEntity get(UUID accountId) {
         return accountRepository.findById(accountId)
-                .map(accountMapper::toResponse)
-                .orElseThrow(()->new AccountNotFoundException(
-                        MessageFormat.format("Account with id: {0} not found",accountId))
-                );
+                .orElseThrow(() -> ResourceNotFoundException.of("Аккаунт", accountId));
     }
 
-    @Override
-    public AccountResponse findByUsername(String username) {
-        var account =  accountRepository.findByUsername(username)
-                .map(accountMapper::toResponse)
-                .orElseThrow(()->new AccountNotFoundException(
-                        MessageFormat.format("Account with username: {0} not found",username))
-                );
-        String redisStringValue = jsonMapper.writeValueAsString(account);
-        redisTemplate.opsForValue().set(account.id().toString(),redisStringValue);
-        return account;
+    private AccountEntity getActive(UUID accountId) {
+        return accountRepository.findByIdAndDeletedAtIsNull(accountId)
+                .orElseThrow(() -> ResourceNotFoundException.of("Аккаунт", accountId));
     }
 
-    @Override
-    public AccountResponse findByEmail(String email) {
-        var accountByEmail = accountRepository.findByEmail(email)
-                .map(accountMapper::toResponse)
-                .orElseThrow(()->new AccountNotFoundException(
-                        MessageFormat.format("Account with email: {0} not found",email)
-                ));
-        log.info("Account by email is find: {}",accountByEmail);
-        return accountByEmail;
-
-
-    }
-
-    @Transactional
-    public void createAccount(AccountRequest accountRequest) {
-        AccountEntity accountEntity = new AccountEntity();
-        accountEntity.setUsername(accountRequest.username());
-        accountEntity.setEmail(accountRequest.email());
-        accountEntity.setStatus(AccountStatus.ACTIVE);
-        accountRepository.save(accountEntity);
-        log.info("Created account with id: {}", accountEntity.getId());
-    }
-
-    @Override
-    public AccountMapResponse findAccountByStatus(AccountStatus accountStatus,
-                                                 List<AccountResponse> accountResponses) {
-        List<AccountResponse> filteredByStatusAccount = accountResponses.stream()
-                .filter(account->account.status().equals(accountStatus))
-                .toList();
-        Map<String,List<AccountResponse>> result = filteredByStatusAccount.stream()
-                .collect(Collectors.groupingBy(a->a.status().name()));
-        result.forEach(log::info);
-        return AccountMapResponse.builder()
-                .accounts(result)
-                .build();
-    }
-
-    @Override
-    @Transactional
-    public void deleteAccount(UUID accountId) {
-        accountRepository.findById(accountId).ifPresent(accountRepository::delete);
-        log.info("Deleted account with id: {}", accountId);
-    }
-
-
-    @Transactional
-    @Override
-    public void updateAccount(UUID accountId, AccountRequest accountRequest) {
-        accountRepository.findById(accountId)
-                .ifPresentOrElse(account->{
-                    account.setUsername(accountRequest.username());
-                    account.setEmail(accountRequest.email());
-                    account.setStatus(AccountStatus.ACTIVE);
-                    accountRepository.save(account);
-                },()->{
-                   throw  new AccountNotFoundException(MessageFormat.format("Account with id: {0} not found",accountId));
-                });
+    private void publish(UUID accountId, String eventType) {
+        outboxPublisher.publish(
+                AccountOutboxEvents.AGGREGATE,
+                accountId,
+                eventType,
+                AccountOutboxEvents.payload(accountId));
     }
 }

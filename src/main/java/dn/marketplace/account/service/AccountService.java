@@ -1,36 +1,33 @@
 package dn.marketplace.account.service;
 
 import dn.marketplace.account.api.dto.AccountListResponse;
-import dn.marketplace.account.api.dto.AccountMapResponse;
-import dn.marketplace.account.api.dto.AccountRequest;
+import dn.marketplace.account.api.dto.AccountProfileResponse;
 import dn.marketplace.account.api.dto.AccountResponse;
-import dn.marketplace.account.api.enums.AccountStatus;
+import dn.marketplace.account.api.enums.BusinessStatus;
 
-import java.util.List;
 import java.util.UUID;
 
 public interface AccountService {
 
-
-    AccountListResponse findAll(int pageNumber,
-                                int pageSize);
-
-    AccountMapResponse findAllByStatus(AccountStatus status,
-                                       int pageNumber,
-                                       int pageSize);
+    AccountListResponse findAllByStatus(BusinessStatus status, int pageNumber, int pageSize);
 
     AccountResponse findById(UUID accountId);
 
+    AccountProfileResponse findMe(UUID accountId);
+
     AccountResponse findByUsername(String username);
 
-    AccountResponse findByEmail(String email);
+    AccountResponse applyAsSeller(UUID accountId);
 
-    void createAccount(AccountRequest accountRequest);
+    AccountResponse approveSeller(UUID accountId);
 
-    AccountMapResponse findAccountByStatus(AccountStatus accountStatus,
-                                           List<AccountResponse> accountResponses);
+    AccountResponse rejectSeller(UUID accountId, String reason);
 
-    void deleteAccount(UUID accountId);
+    AccountResponse revokeSeller(UUID accountId);
 
-    void updateAccount(UUID accountId, AccountRequest accountRequest);
+    AccountResponse ban(UUID accountId);
+
+    AccountResponse unban(UUID accountId);
+
+    void delete(UUID accountId);
 }

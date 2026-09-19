@@ -19,7 +19,9 @@ repositories {
 }
 
 extra["springCloudVersion"] = "2025.1.2"
-// Testcontainers не входит в BOM Spring Boot 4.1 — тянем свой
+// Testcontainers не входит в BOM Spring Boot 4.1 — тянем свой.
+// Docker Engine 29 отклоняет API < 1.40; 1.21.3 по умолчанию шлёт 1.32.
+// Версию клиента задаём в src/test/resources/docker-java.properties (api.version=1.44).
 extra["testcontainersVersion"] = "1.21.3"
 
 dependencies {
@@ -122,4 +124,7 @@ tasks.withType<Test> {
         // а у комментария в PR лимит 65536 символов.
         stackTraceFilters(org.gradle.api.tasks.testing.logging.TestStackTraceFilter.ENTRY_POINT)
     }
+
+    // дубль docker-java.properties: Gradle-демон иногда не подхватывает файл с classpath
+    systemProperty("api.version", "1.44")
 }

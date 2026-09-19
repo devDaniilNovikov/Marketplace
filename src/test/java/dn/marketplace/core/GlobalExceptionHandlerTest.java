@@ -1,6 +1,7 @@
 package dn.marketplace.core;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -62,6 +63,16 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().getDetail()).isEqualTo("нет такого");
+    }
+
+    @Test
+    void optimisticLock_это_409_с_типом_conflict() {
+        ProblemDetail problem = handler.handleOptimisticLock(
+                new OptimisticLockingFailureException("Row was updated by another transaction"));
+
+        assertThat(problem.getStatus()).isEqualTo(409);
+        assertThat(problem.getType()).hasToString("urn:marketplace:error:conflict");
+        assertThat(problem.getDetail()).doesNotContain("Row was updated");
     }
 
     @Test

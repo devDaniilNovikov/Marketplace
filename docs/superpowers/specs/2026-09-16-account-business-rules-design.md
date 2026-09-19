@@ -29,13 +29,13 @@
 
 | Поле | Тип Java | Колонка | Кто пишет |
 |---|---|---|---|
-| `id` | `UUID` (без `@GeneratedValue`) | `id UUID PK` | JIT (`sub` из JWT), больше никто |
+| `id` | `UUID` (без `@GeneratedValue`) | `id UUID PK` | JIT (`sub` из JWT) и консьюмер `USER_UPDATED` (`REGISTER` приходит раньше первого запроса) — оба через один `INSERT … ON CONFLICT DO NOTHING`; REST не создаёт |
 | `username` | `String` | `user_name VARCHAR(255) NOT NULL` | JIT (`preferred_username`), консьюмер `USER_UPDATED` |
 | `businessStatus` | `BusinessStatus` | `business_status VARCHAR(32) NOT NULL DEFAULT 'BUYER'` | только методы-переходы |
 | `banned` | `boolean` | `banned BOOLEAN NOT NULL DEFAULT false` | `ban()`, `unban()` |
 | `emailSnapshot` | `String` | `email_snapshot VARCHAR(255) NULL` | консьюмер `USER_UPDATED`; `delete()` обнуляет |
-| `firstNameSnapshot` | `String` | `first_name_snapshot VARCHAR(100) NULL` | то же |
-| `lastNameSnapshot` | `String` | `last_name_snapshot VARCHAR(100) NULL` | то же |
+| `firstNameSnapshot` | `String` | `first_name_snapshot VARCHAR(255) NULL` | то же (255 — лимит Keycloak) |
+| `lastNameSnapshot` | `String` | `last_name_snapshot VARCHAR(255) NULL` | то же |
 | `rejectionReason` | `String` | `rejection_reason TEXT NULL` | `rejectSeller(reason)`; `applyAsSeller`/`approveSeller` обнуляют |
 | `sellerApplications` | `int` | `seller_applications SMALLINT NOT NULL DEFAULT 0` | `applyAsSeller` (++), `approveSeller` (=0), истечение холда (=0) |
 | `sellerApplicationHoldUntil` | `Instant` | `seller_application_hold_until TIMESTAMPTZ NULL` | `applyAsSeller` |
@@ -45,7 +45,7 @@
 | `deletedAt` | `Instant` | `deleted_at TIMESTAMPTZ NULL` | `delete()` |
 
 - Enum `BusinessStatus { BUYER, SELLER_PENDING, SELLER, SELLER_REJECTED }` в `dn.marketplace.account.api.enums` (публичный: нужен DTO и фасаду). Прежний `AccountStatus { ACTIVE, BLOCKED, VERIFYING }` **удаляется**.
-- Lombok: `@Getter`, `@NoArgsConstructor(access = PROTECTED)`. **Никаких `@Setter`** на `businessStatus`, `banned`, `deletedAt`, `rejectionReason`, `sellerApplications`, `sellerApplicationHoldUntil`. Сеттеры только на `username` и три `*Snapshot` — для консьюмера `USER_UPDATED` (B8.1); их видимость — package-private.
+- Lombok: `@Getter`, `@NoArgsConstructor(access = PROTECTED)`. **Никаких `@Setter`.** Профиль (`username` и три `*Snapshot`) обновляет единственный метод `applyProfile(...)` — для консьюмера `USER_UPDATED` (B8.1).
 - Даты — только `java.time.Instant` (правило проекта).
 - Поле `email` без суффикса (текущее) — удаляется (задача 3 плана исправлений).
 

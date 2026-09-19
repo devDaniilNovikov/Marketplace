@@ -1,5 +1,13 @@
 package dn.marketplace.db;
 
+import liquibase.command.CommandScope;
+import liquibase.command.core.RollbackCountCommandStep;
+import liquibase.command.core.UpdateCommandStep;
+import liquibase.command.core.helpers.DatabaseChangelogCommandStep;
+import liquibase.command.core.helpers.DbUrlConnectionArgumentsCommandStep;
+import liquibase.database.Database;
+import liquibase.database.DatabaseFactory;
+import liquibase.database.jvm.JdbcConnection;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -16,6 +24,8 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import javax.sql.DataSource;
+import java.sql.Connection;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,10 +37,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Контекст поднимается минимальный: только DataSource, Liquibase и JdbcTemplate.
  * JPA сюда намеренно не подключён — этот тест про миграции, и он должен
  * оставаться зелёным независимо от состояния сущностей.
- * <p>
- * {@code @Autowired} на параметрах обязателен: Spring резолвит параметры тест-методов
- * только помеченные {@code @Autowired}, {@code @Qualifier} или {@code @Value}. Без
- * аннотации JUnit не находит резолвер и валит тест до входа в тело.
  */
 @Tag("it")
 @SpringBootTest(
@@ -51,7 +57,7 @@ class LiquibaseMigrationTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.liquibase.enabled", () -> true);
-        registry.add("spring.liquibase.change-log", () -> "classpath:db/changelog/db.changelog-master.yaml");
+        registry.add("spring.liquibase.change-log", () -> "classpath:" + CHANGELOG);
         registry.add("spring.liquibase.liquibase-schema", () -> "public");
     }
 
@@ -63,9 +69,17 @@ class LiquibaseMigrationTest {
     static class MigrationOnlyApplication {
     }
 
+    private static final String CHANGELOG = "db/changelog/db.changelog-master.yaml";
+
+    @Autowired
+    JdbcTemplate jdbc;
+
+    @Autowired
+    DataSource dataSource;
+
     @Test
     @DisplayName("схема market_place создана")
-    void schema_is_created(@Autowired JdbcTemplate jdbc) {
+    void schema_is_created() {
         Integer count = jdbc.queryForObject(
                 "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'market_place'",
                 Integer.class);
@@ -75,7 +89,7 @@ class LiquibaseMigrationTest {
 
     @Test
     @DisplayName("общая триггерная функция set_updated_at доступна")
-    void trigger_function_exists(@Autowired JdbcTemplate jdbc) {
+    void trigger_function_exists() {
         Integer count = jdbc.queryForObject("""
                 SELECT count(*)
                 FROM pg_proc p
@@ -88,7 +102,7 @@ class LiquibaseMigrationTest {
 
     @Test
     @DisplayName("outbox_messages имеет колонки, нужные воркеру с retry")
-    void outbox_has_worker_columns(@Autowired JdbcTemplate jdbc) {
+    void outbox_has_worker_columns() {
         List<String> columns = jdbc.queryForList("""
                 SELECT column_name
                 FROM information_schema.columns
@@ -102,7 +116,7 @@ class LiquibaseMigrationTest {
 
     @Test
     @DisplayName("aggregate_id хранится как UUID, а не как строка")
-    void aggregate_id_is_uuid(@Autowired JdbcTemplate jdbc) {
+    void aggregate_id_is_uuid() {
         String type = jdbc.queryForObject("""
                 SELECT data_type
                 FROM information_schema.columns
@@ -115,8 +129,23 @@ class LiquibaseMigrationTest {
     }
 
     @Test
+    @DisplayName("accounts в схеме market_place, без колонки role")
+    void accounts_table_matches_ssot() {
+        List<String> columns = jdbc.queryForList("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'market_place' AND table_name = 'accounts'
+                """, String.class);
+
+        assertThat(columns)
+                .contains("id", "user_name", "business_status", "banned", "email_snapshot",
+                        "version", "deleted_at", "seller_applications", "rejection_reason")
+                .doesNotContain("role");
+    }
+
+    @Test
     @DisplayName("индекс поллера частичный: SENT и DEAD в него не попадают")
-    void poll_index_is_partial(@Autowired JdbcTemplate jdbc) {
+    void poll_index_is_partial() {
         String definition = jdbc.queryForObject("""
                 SELECT indexdef FROM pg_indexes
                 WHERE schemaname = 'market_place' AND indexname = 'idx_outbox_poll'
@@ -131,7 +160,7 @@ class LiquibaseMigrationTest {
 
     @Test
     @DisplayName("CHECK на status не пропускает произвольные значения")
-    void status_check_constraint_is_enforced(@Autowired JdbcTemplate jdbc) {
+    void status_check_constraint_is_enforced() {
         assertThat(insertOutboxWithStatus(jdbc, "PENDING"))
                 .as("валидный статус должен проходить")
                 .isTrue();
@@ -139,6 +168,43 @@ class LiquibaseMigrationTest {
         assertThat(insertOutboxWithStatus(jdbc, "WHATEVER"))
                 .as("невалидный статус должен отклоняться базой, а не только Java-кодом")
                 .isFalse();
+    }
+
+    @Test
+    @DisplayName("каждый changeset откатывается своим --rollback и накатывается заново")
+    void every_changeset_rolls_back_and_reapplies() throws Exception {
+        Integer applied = jdbc.queryForObject("SELECT count(*) FROM public.databasechangelog", Integer.class);
+        assertThat(applied).isPositive();
+
+        try (Connection connection = dataSource.getConnection()) {
+            Database database = DatabaseFactory.getInstance()
+                    .findCorrectDatabaseImplementation(new JdbcConnection(connection));
+            database.setLiquibaseSchemaName("public");
+
+            // Откат всех changeset'ов: если хоть один --rollback невалиден, здесь будет исключение
+            new CommandScope(RollbackCountCommandStep.COMMAND_NAME)
+                    .addArgumentValue(DbUrlConnectionArgumentsCommandStep.DATABASE_ARG, database)
+                    .addArgumentValue(DatabaseChangelogCommandStep.CHANGELOG_FILE_ARG, CHANGELOG)
+                    .addArgumentValue(RollbackCountCommandStep.COUNT_ARG, applied)
+                    .execute();
+
+            Integer schemas = jdbc.queryForObject(
+                    "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'market_place'",
+                    Integer.class);
+            assertThat(schemas).as("после полного отката схемы market_place быть не должно").isZero();
+
+            new CommandScope(UpdateCommandStep.COMMAND_NAME)
+                    .addArgumentValue(DbUrlConnectionArgumentsCommandStep.DATABASE_ARG, database)
+                    .addArgumentValue(DatabaseChangelogCommandStep.CHANGELOG_FILE_ARG, CHANGELOG)
+                    .execute();
+        }
+
+        Integer reapplied = jdbc.queryForObject("SELECT count(*) FROM public.databasechangelog", Integer.class);
+        assertThat(reapplied).isEqualTo(applied);
+        Integer accounts = jdbc.queryForObject(
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'market_place' AND table_name = 'accounts'",
+                Integer.class);
+        assertThat(accounts).isOne();
     }
 
     private boolean insertOutboxWithStatus(JdbcTemplate jdbc, String status) {
