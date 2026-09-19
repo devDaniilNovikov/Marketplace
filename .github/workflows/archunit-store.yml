@@ -1,0 +1,82 @@
+name: ArchUnit Store
+
+# Генерирует и коммитит src/test/resources/archunit_store силами CI.
+#
+# Зачем отдельным workflow, а не руками: стор — это вывод прогона правил по коду,
+# и для него нужен JDK 25 с настроенным тулчейном. Генерация в CI избавляет
+# от зависимости от того, что стоит на машине разработчика.
+#
+# Когда запускать:
+#   - первый раз, чтобы завести стор и включить строгий режим;
+#   - каждый раз, когда нарушение ИСПРАВЛЕНО: при allowStoreUpdate=true прогон
+#     уменьшает стор в своей рабочей копии, и без этого коммита изменение теряется.
+#
+# Запуск: Actions -> ArchUnit Store -> Run workflow (выбрать ветку).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: archunit-store-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    runs-on: ${{ vars.AGENT_RUNS_ON || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      # ArchitectureTest — статический анализ, Docker ему не нужен.
+      # allowStoreCreation форсируем на этот прогон: он может быть уже выключен
+      # в archunit.properties, а нам нужно именно пересоздать стор.
+      - name: Прогнать правила архитектуры
+        run: |
+          ./gradlew test --tests '*ArchitectureTest' \
+            -PfastTests=true -ParchunitAllowStoreCreation=true --stacktrace
+
+      - name: Показать, что получилось
+        run: |
+          echo '## Стор ArchUnit' >> "$GITHUB_STEP_SUMMARY"
+          if [ -d src/test/resources/archunit_store ]; then
+            {
+              echo '```'
+              ls -la src/test/resources/archunit_store/
+              echo
+              echo '--- stored.rules ---'
+              cat src/test/resources/archunit_store/stored.rules 2>/dev/null || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Каталог не создан: замороженных нарушений нет.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Закоммитить, если изменилось
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A src/test/resources/archunit_store
+          if git diff --cached --quiet; then
+            echo 'Стор не изменился — коммитить нечего.'
+            exit 0
+          fi
+          git commit -m "test(A7): перегенерировать стор ArchUnit
+
+          Стор — вывод прогона правил по текущему коду. Сгенерирован в CI,
+          чтобы не зависеть от наличия JDK 25 на машине разработчика."
+          git push origin "HEAD:${{ github.ref_name }}"

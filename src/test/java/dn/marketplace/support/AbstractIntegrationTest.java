@@ -1,5 +1,6 @@
 package dn.marketplace.support;
 
+import org.junit.jupiter.api.Tag;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -18,7 +19,11 @@ import org.testcontainers.utility.DockerImageName;
  * Контейнеры поднимаются один раз на всю JVM (статический блок, а не
  * {@code @Container}) и переиспользуются всеми наследниками — иначе каждый
  * тест-класс платил бы за старт Postgres заново.
+ * <p>
+ * {@code @Tag("it")} наследуется потомками и отделяет тесты, которым нужен Docker:
+ * {@code ./gradlew test -PfastTests} их пропускает.
  */
+@Tag("it")
 @SpringBootTest
 public abstract class AbstractIntegrationTest {
 
