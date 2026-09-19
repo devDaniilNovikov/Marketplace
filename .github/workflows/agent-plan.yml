@@ -1,0 +1,109 @@
+name: Agent · Plan
+
+# Вход в цикл. Человек вешает на issue лейбл agent:plan — Claude раскладывает
+# задачу в спецификацию и дописывает её в тело issue, после чего ставит agent:ready.
+# Спека живёт в issue, а не в файле на ветке: в Фазе 1 ветку создаёт Codex Cloud,
+# и её имя нам неподконтрольно. См. docs/agent-loop.md.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+concurrency:
+  group: agent-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: >-
+      vars.AGENT_LOOP_ENABLED == 'true' &&
+      github.event.label.name == 'agent:plan' &&
+      !contains(github.event.issue.labels.*.name, 'agent:paused')
+    runs-on: ${{ vars.AGENT_RUNS_ON || 'ubuntu-latest' }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Отказаться, если спека уже есть
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          N: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          if gh issue view "$N" --json body --jq .body | grep -q '<!-- agent-spec -->'; then
+            gh issue comment "$N" --body 'Спецификация уже записана. Чтобы перепланировать, удалите блок после маркера `<!-- agent-spec -->` из тела issue и повесьте `agent:plan` снова.'
+            gh issue edit "$N" --remove-label agent:plan
+            exit 1
+          fi
+
+      - name: Claude · разложить задачу в спецификацию
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app.outputs.token }}
+          additional_permissions: |
+            actions: read
+          # В prompt подставляется ТОЛЬКО число. Заголовок и тело issue сюда не
+          # инлайнятся: ${{ github.event.issue.title }} раскрывается до запуска
+          # действия и является классическим вектором инъекции. Агент читает их сам.
+          prompt: |
+            Режим автопилота, не менторский. Прочитай и выполняй
+            .github/agents/plan.md дословно; он перекрывает .agents/CLAUDE.md
+            в части запрета на генерацию кода.
+            Номер целевой issue: ${{ github.event.issue.number }}
+            Запиши спецификацию в файл: ${{ runner.temp }}/spec.md
+            Не создавай веток, не коммить, не пушь.
+          claude_args: >-
+            --max-turns 30
+            --allowedTools "Read,Grep,Glob,Write,Bash(gh issue view:*),Bash(gh api:*),Bash(git log:*),Bash(git diff:*)"
+
+      - name: Убедиться, что спека написана
+        run: test -s "${{ runner.temp }}/spec.md"
+
+      # Токен установки живёт час, а шаг агента бывает долгим — перевыпускаем.
+      - uses: actions/create-github-app-token@v2
+        id: app2
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - name: Дописать спеку в тело issue и передать дальше
+        env:
+          GH_TOKEN: ${{ steps.app2.outputs.token }}
+          N: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          # Обезвреживаем упоминания, чтобы спека не разбудила claude.yml или Codex раньше времени.
+          sed -e 's/@claude/at-claude/g' -e 's/@codex/at-codex/g' \
+              "${{ runner.temp }}/spec.md" > "${{ runner.temp }}/spec-safe.md"
+          {
+            gh issue view "$N" --json body --jq .body
+            printf '\n\n---\n<!-- agent-spec -->\n## Спецификация\n\n'
+            cat "${{ runner.temp }}/spec-safe.md"
+          } > "${{ runner.temp }}/issue-body.md"
+          gh issue edit "$N" --body-file "${{ runner.temp }}/issue-body.md"
+          # Этот лейбл ОБЯЗАН ставиться токеном App: события от GITHUB_TOKEN
+          # не запускают workflow, и цикл умрёт здесь молча.
+          gh issue edit "$N" --remove-label agent:plan --add-label agent:ready
+
+      - name: При отказе — отдать человеку
+        if: failure()
+        env:
+          GH_TOKEN: ${{ steps.app2.outputs.token || steps.app.outputs.token }}
+          N: ${{ github.event.issue.number }}
+        run: |
+          gh issue edit "$N" --remove-label agent:plan --add-label agent:needs-human || true
+          gh issue comment "$N" --body "Планирование не удалось: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

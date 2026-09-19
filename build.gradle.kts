@@ -94,5 +94,32 @@ dependencyManagement {
 }
 
 tasks.withType<Test> {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        // -PfastTests — прогон без Docker: дешёвый гейт для раундов агентского цикла.
+        // Тег "it" наследуется от AbstractIntegrationTest, поэтому разделение не зависит
+        // от того, назвали класс *Test или *IT, и не разъедется при следующем переименовании.
+        if (providers.gradleProperty("fastTests").isPresent) {
+            excludeTags("it")
+        }
+    }
+
+    // archunit.properties читает форкнутая JVM тестов, а -D на JVM Gradle туда не долетает.
+    // Без этого проброса переключить FreezingArchRule снаружи (из CI) невозможно.
+    providers.gradleProperty("archunitAllowStoreCreation").orNull?.let {
+        systemProperty("freeze.store.default.allowStoreCreation", it)
+    }
+
+    // По умолчанию Gradle печатает только класс исключения и строку — без сообщения.
+    // Для агентского цикла это блокер: agent-gate.yml отдаёт хвост лога CI исполнителю
+    // как задание на доработку, и по строке вида "SomeException at ArrayList.java:1604"
+    // починить нельзя — раунд сгорит вслепую.
+    testLogging {
+        events("failed", "skipped")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showStackTraces = true
+        showCauses = true
+        // Срезает внутренние кадры Gradle и JUnit: иначе сообщение тонет в сотне строк,
+        // а у комментария в PR лимит 65536 символов.
+        stackTraceFilters(org.gradle.api.tasks.testing.logging.TestStackTraceFilter.ENTRY_POINT)
+    }
 }

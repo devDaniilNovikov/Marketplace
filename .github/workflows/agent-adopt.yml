@@ -1,0 +1,92 @@
+name: Agent · Adopt PR
+
+# PR в Фазе 1 создаёт Codex Cloud, поэтому ни имя ветки, ни тело PR нам неподконтрольны.
+# Этот workflow «усыновляет» такой PR: находит задачу по строке `Closes #N`, проверяет,
+# что задача действительно отдана в работу, и вписывает в тело PR маркеры состояния,
+# на которых держится весь остальной цикл.
+#
+# Привязка идёт по лейблу задачи, а не по логину автора PR: так цикл не сломается,
+# если Codex сменит имя бота или PR откроет владелец руками.
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions: {}
+
+concurrency:
+  group: agent-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  adopt:
+    if: >-
+      vars.AGENT_LOOP_ENABLED == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ vars.AGENT_RUNS_ON || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - name: Найти задачу и решить, наш ли это PR
+        id: ctx
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          BODY=$(gh pr view "$PR" --json body --jq .body)
+
+          if printf '%s' "$BODY" | grep -q '<!-- agent-issue:'; then
+            echo "PR уже усыновлён"; echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Closes/Fixes/Resolves #N — стандартные связки GitHub.
+          ISSUE=$(printf '%s' "$BODY" \
+            | grep -oiE '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))[[:space:]]+#[0-9]+' \
+            | head -1 | grep -oE '[0-9]+' || true)
+          if [ -z "$ISSUE" ]; then
+            echo "в теле PR нет ссылки на задачу — обычный PR, не трогаем"
+            echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          LABELS=$(gh issue view "$ISSUE" --json labels --jq '[.labels[].name] | join(",")')
+          case ",$LABELS," in
+            *,agent:implementing,*) ;;
+            *) echo "задача #$ISSUE не в работе у цикла — не трогаем"
+               echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+
+          { echo "skip=0"; echo "issue=$ISSUE"; } >> "$GITHUB_OUTPUT"
+
+      - name: Вписать маркеры состояния и запустить цикл ревью
+        if: steps.ctx.outputs.skip == '0'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          ISSUE: ${{ steps.ctx.outputs.issue }}
+        run: |
+          set -euo pipefail
+          # Счётчик раундов живёт в теле PR: он есть в payload почти каждого события
+          # цикла, а событие pull_request:edited никто не слушает — правка тела
+          # ничего не будит и не может зациклиться.
+          {
+            gh pr view "$PR" --json body --jq .body
+            printf '\n\n<!-- agent-issue: %s -->\n<!-- agent-round: 0 -->\n' "$ISSUE"
+          } > "${{ runner.temp }}/pr-body.md"
+          gh pr edit "$PR" --body-file "${{ runner.temp }}/pr-body.md"
+          gh pr edit "$PR" --add-label agent:wip
+          gh issue comment "$ISSUE" --body "Работа принята в PR #$PR, ожидается CI."
+
+      - name: При отказе — отдать человеку
+        if: failure() && steps.ctx.outputs.issue != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          gh pr edit "${{ github.event.pull_request.number }}" --add-label agent:needs-human || true
+          gh issue edit "${{ steps.ctx.outputs.issue }}" --remove-label agent:implementing --add-label agent:needs-human || true

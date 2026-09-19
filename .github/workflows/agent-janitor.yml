@@ -1,0 +1,84 @@
+name: Agent · Janitor
+
+# Каждый переход цикла предполагает, что предыдущий workflow доработал до конца.
+# Когда раннер умирает посреди джоба, задача или PR навсегда зависают в промежуточном
+# состоянии, и НИКТО этого не заметит: события больше не приходят.
+#
+# Есть и вторая причина: GitHub держит в очереди только один ожидающий прогон на группу
+# concurrency, и при частых событиях средний переход может быть молча отменён.
+#
+# Этот сторож — единственное, что замечает оба случая.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  sweep:
+    if: vars.AGENT_LOOP_ENABLED == 'true'
+    runs-on: ${{ vars.AGENT_RUNS_ON || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    permissions: {}
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - name: Запарковать зависшее
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          STALE_HOURS: ${{ vars.AGENT_STALE_HOURS }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          HOURS=${STALE_HOURS:-6}
+          CUTOFF=$(date -u -d "-${HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Порог зависания: $CUTOFF (${HOURS} ч)"
+
+          # Промежуточные состояния. agent:needs-human сюда не входит намеренно:
+          # это терминальное состояние, его никто не должен трогать.
+          STATES="agent:plan agent:ready agent:implementing agent:wip agent:review agent:rework agent:approved"
+
+          PARKED=0
+          for STATE in $STATES; do
+            gh api "repos/$REPO/issues" --paginate \
+              -f state=open -f labels="$STATE" \
+              --jq ".[] | select(.updated_at < \"$CUTOFF\") | select(has(\"pull_request\") | not) | .number" \
+              > /tmp/issues.txt || true
+            gh api "repos/$REPO/issues" --paginate \
+              -f state=open -f labels="$STATE" \
+              --jq ".[] | select(.updated_at < \"$CUTOFF\") | select(has(\"pull_request\")) | .number" \
+              > /tmp/prs.txt || true
+
+            while read -r N; do
+              [ -n "$N" ] || continue
+              # На паузе — значит человек так решил, не трогаем.
+              if gh issue view "$N" --json labels --jq '[.labels[].name]|join(",")' | grep -q 'agent:paused'; then continue; fi
+              echo "issue #$N завис в $STATE"
+              gh issue edit "$N" --remove-label "$STATE" --add-label agent:needs-human
+              gh issue comment "$N" --body "Задача провисела в состоянии \`$STATE\` дольше ${HOURS} ч без движения — вероятно, прогон оборвался. Передана человеку. Сторож: $RUN_URL"
+              PARKED=$((PARKED+1))
+            done < /tmp/issues.txt
+
+            while read -r N; do
+              [ -n "$N" ] || continue
+              if gh pr view "$N" --json labels --jq '[.labels[].name]|join(",")' | grep -q 'agent:paused'; then continue; fi
+              echo "PR #$N завис в $STATE"
+              gh pr edit "$N" --remove-label "$STATE" --add-label agent:needs-human
+              gh pr comment "$N" --body "PR провисел в состоянии \`$STATE\` дольше ${HOURS} ч без движения — вероятно, прогон оборвался. Передан человеку. Сторож: $RUN_URL"
+              PARKED=$((PARKED+1))
+            done < /tmp/prs.txt
+          done
+
+          {
+            echo "## Сторож агентского цикла"
+            echo
+            echo "- Порог: ${HOURS} ч (до \`$CUTOFF\`)"
+            echo "- Запарковано: **$PARKED**"
+          } >> "$GITHUB_STEP_SUMMARY"
