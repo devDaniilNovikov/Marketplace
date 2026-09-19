@@ -1,6 +1,10 @@
 name: Agent · Merge
 
-# Мержит НЕ агент, а этот джоб. Так решено не из перестраховки: claude-code-action
+# Мержит НЕ агент, а этот джоб.
+#
+# Выключатель отдельный от AGENT_LOOP_ENABLED намеренно: цикл должен уметь
+# доводить задачи до agent:approved, пока ты вручную смотришь на вердикты
+# и копишь статистику ложных одобрений. Без этого автомат включается вслепую. Так решено не из перестраховки: claude-code-action
 # по документации не умеет мержить (ограничение зашито в его системный промпт),
 # и в итоге это правильнее — гейт становится проверяемым условием, а не решением модели.
 #
@@ -25,6 +29,7 @@ jobs:
   merge:
     if: >-
       vars.AGENT_LOOP_ENABLED == 'true' &&
+      vars.AGENT_AUTOMERGE_ENABLED == 'true' &&
       (
         (github.event_name == 'pull_request' && github.event.label.name == 'agent:approved') ||
         (github.event_name == 'workflow_run' &&
