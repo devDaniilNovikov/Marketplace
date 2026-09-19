@@ -1,0 +1,1 @@
+Class <dn.marketplace.account.api.repository.AccountRepository> does not reside in a package 'dn.marketplace.*.repository..' in (AccountRepository.java:0)
